@@ -4,7 +4,7 @@ import anthropic
 import datetime
 from docx import Document
 import os
-import fitz  # PyMuPDF for PDF parsing
+from PyMuPDF import fitz  # PyMuPDF for PDF parsing
 import pandas as pd
 import io
 from pathlib import Path
