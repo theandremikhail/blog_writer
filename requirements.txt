@@ -5,3 +5,8 @@ python-dotenv
 requests
 pyyaml
 python-docx
+PyMuPDF
+openpyxl
+pandas
+pathlib2
+python-dateutil
