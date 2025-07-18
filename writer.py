@@ -80,7 +80,7 @@ def process_uploaded_file(uploaded_file):
 
 # -------------- STREAMLIT UI ----------------
 st.set_page_config(
-    page_title="AI Blog Writer Pro", 
+    page_title="Alvan, The Marketing Junction", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -188,8 +188,8 @@ st.markdown("""
 # Header
 st.markdown("""
 <div class="main-header">
-    <h1>AI Blog Writer Pro</h1>
-    <p>Advanced AI-powered content creation with document analysis</p>
+    <h1>Hi, I am Alvan!</h1>
+    <p>Advanced AI-powered blog writing tool using Claude Anthropic</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -549,6 +549,6 @@ elif submitted:
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; padding: 2rem; color: #6c757d; font-size: 0.9rem;">
-    <p>Powered by Claude AI | Enhanced Blog Writer Pro | Built with Streamlit</p>
+    <p>Powered by Claude AI | Enhanced Blog Writing Tool | The Marketing Junction</p>
 </div>
 """, unsafe_allow_html=True)
