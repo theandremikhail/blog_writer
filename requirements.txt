@@ -1,12 +1,20 @@
-streamlit
-anthropic
-openai
-python-dotenv
-requests
-pyyaml
-python-docx
-PyMuPDF
-openpyxl
-pandas
-pathlib2
-python-dateutil
+# Core Streamlit framework
+streamlit>=1.28.0
+
+# AI/ML libraries
+anthropic>=0.7.0
+
+# Document processing
+python-docx>=0.8.11
+PyMuPDF>=1.23.0
+
+# Data processing
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# Configuration and utilities
+PyYAML>=6.0
+
+# Additional dependencies that might be needed
+python-dateutil>=2.8.2
+requests>=2.31.0
