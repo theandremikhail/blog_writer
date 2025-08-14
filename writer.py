@@ -8,6 +8,8 @@ import fitz  # PyMuPDF for PDF parsing
 import pandas as pd
 import io
 from pathlib import Path
+import json
+import re
 
 # -------------- CONFIG ----------------
 ANTHROPIC_KEY = st.secrets["api_keys"]["anthropic_api_key"]
@@ -16,6 +18,26 @@ anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 def load_client_config(client_name):
     with open(f"clients/{client_name}.yaml", "r") as file:
         return yaml.safe_load(file)
+
+# -------------- HISTORY MANAGEMENT ----------------
+def save_to_history(title, articles, keywords, timestamp):
+    """Save generated blog to history"""
+    if 'blog_history' not in st.session_state:
+        st.session_state.blog_history = []
+    
+    history_entry = {
+        'timestamp': timestamp,
+        'title': title,
+        'articles': articles,
+        'keywords': keywords,
+        'id': len(st.session_state.blog_history)
+    }
+    
+    st.session_state.blog_history.insert(0, history_entry)  # Add to beginning
+    
+    # Keep only last 10 entries
+    if len(st.session_state.blog_history) > 10:
+        st.session_state.blog_history = st.session_state.blog_history[:10]
 
 # -------------- FILE PROCESSING ----------------
 def process_uploaded_file(uploaded_file):
@@ -84,6 +106,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize session state
+if 'blog_history' not in st.session_state:
+    st.session_state.blog_history = []
+if 'current_articles' not in st.session_state:
+    st.session_state.current_articles = {}
+if 'editing_mode' not in st.session_state:
+    st.session_state.editing_mode = False
 
 # Professional CSS styling
 st.markdown("""
@@ -182,6 +212,29 @@ st.markdown("""
         margin-bottom: 1rem;
         border: 1px solid #e1e8ed;
     }
+    
+    .history-item {
+        background: #f8f9fa;
+        padding: 0.8rem;
+        margin: 0.5rem 0;
+        border-radius: 4px;
+        border-left: 3px solid #6c757d;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+    
+    .history-item:hover {
+        background: #e9ecef;
+        border-left-color: #3498db;
+    }
+    
+    .edit-section {
+        background: #fff3cd;
+        padding: 1.5rem;
+        border-radius: 6px;
+        border: 1px solid #ffeaa7;
+        margin: 1.5rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -224,6 +277,14 @@ with st.sidebar:
         help="Format content for AI search engines with Q&A structure"
     )
     
+    # Word count setting
+    st.markdown("### Content Settings")
+    word_count_range = st.text_input(
+        "Word Count Range",
+        value="750-1500",
+        help="Enter desired word count range (e.g., 750-1500)"
+    )
+    
     # Export options
     st.markdown("### Export Options")
     export_format = st.selectbox(
@@ -231,6 +292,18 @@ with st.sidebar:
         ["DOCX", "PDF", "Both"],
         help="Choose export format for generated content"
     )
+    
+    # Blog History
+    st.markdown("### Blog History")
+    if st.session_state.blog_history:
+        st.markdown("<small>Click to view previous blogs:</small>", unsafe_allow_html=True)
+        for entry in st.session_state.blog_history[:5]:  # Show last 5
+            if st.button(f"📄 {entry['title'][:30]}...", key=f"history_{entry['id']}"):
+                st.session_state.current_articles = entry['articles']
+                st.session_state.loaded_from_history = True
+                st.rerun()
+    else:
+        st.info("No history yet. Generate your first blog!")
 
 # Main content area
 col1, col2 = st.columns([2, 1])
@@ -313,7 +386,7 @@ with col2:
                  st.session_state.generation_stats['total_words'] // max(1, st.session_state.generation_stats['total_blogs']))
 
 # -------------- CLAUDE PROMPT HELPER ----------------
-def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK"):
+def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500"):
     base_keywords = client_cfg.get("keywords", [])
     if custom_keywords:
         additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
@@ -328,6 +401,12 @@ def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords=""
     language_instruction = "UK English" if language == "UK" else "US English"
     spelling_note = "(use British spelling, 's' instead of 'z' in words like 'organisation')" if language == "UK" else "(use American spelling, 'z' instead of 's' in words like 'organization')"
     
+    # Parse word range
+    try:
+        min_words, max_words = map(int, word_range.split('-'))
+    except:
+        min_words, max_words = 750, 1500
+    
     prompt = f'''
 Write a comprehensive blog article in {language_instruction} {spelling_note} about: "{title}"
 
@@ -335,6 +414,8 @@ Audience: knowledgeable professionals in the industry.
 Tone: {client_cfg.get("tone", "informative and engaging")}.
 Perspective: Professional recruitment agency (don't mention this explicitly).
 Avoid: Em/En dashes, clichéd phrases like 'in the world of', generic conclusions.
+
+CRITICAL INSTRUCTION: DO NOT end the article with a section called "Conclusion" or "In Summary" or any similar concluding section title. Instead, end with an engaging final section that has a creative title that ties together the main themes while looking forward or providing actionable insights. Examples of good final section titles: "The Path Forward", "Embracing Tomorrow's Opportunities", "Your Next Strategic Move", "Building on These Foundations", etc.
 
 DOCUMENT ANALYSIS:
 {f"Supporting Document Content: {document_content}" if document_content else "No supporting document provided."}
@@ -344,8 +425,8 @@ Please analyze the supporting document (if provided) and extract relevant insigh
 CONTENT REQUIREMENTS:
 - Include SEO-friendly headings and subheadings
 - Use proper {language_instruction} grammar and spelling
-- Structure: Introduction, 3-4 main sections, conclusion
-- Word count: 800-1200 words
+- Structure: Introduction, 3-4 main sections, then a final forward-looking section (NOT called "Conclusion")
+- Word count: {min_words}-{max_words} words
 - Keywords to naturally incorporate: {keywords}
 - Key facts to include: {facts}
 - Quotes to incorporate: {quotes}
@@ -358,6 +439,7 @@ IMPORTANT GUIDELINES:
 - If using document content, cite it as "according to recent research" or "industry data shows"
 - Make the content engaging and actionable for professionals
 - Include practical insights and takeaways
+- End with a forward-looking, action-oriented final section (not a traditional conclusion)
 
 Please generate a well-structured, informative blog article that incorporates all provided information naturally and professionally.
 '''
@@ -377,45 +459,125 @@ def call_claude(prompt):
         st.error(f"Error calling Claude API: {str(e)}")
         return None
 
+# -------------- ARTICLE REVISION ----------------
+def revise_article(original_article, revision_request, language="UK"):
+    language_instruction = "UK English" if language == "UK" else "US English"
+    
+    prompt = f'''
+Please revise the following blog article based on the specific request below.
+
+ORIGINAL ARTICLE:
+{original_article}
+
+REVISION REQUEST:
+{revision_request}
+
+IMPORTANT GUIDELINES:
+- Maintain the same {language_instruction} and style as the original
+- Only make the requested changes
+- Keep all other content intact unless the revision specifically requires broader changes
+- Ensure the article remains coherent after revisions
+- Do not add a conclusion section - maintain the forward-looking final section
+
+Please provide the revised article with the requested changes implemented.
+'''
+    
+    return call_claude(prompt)
+
+# -------------- CONVERT MARKDOWN TO DOCX ----------------
+def markdown_to_docx(content, title):
+    """Convert markdown content to DOCX format matching the preview"""
+    doc = Document()
+    
+    # Add title
+    doc.add_heading(title, 0)
+    
+    # Process the content line by line
+    lines = content.split('\n')
+    current_paragraph = []
+    
+    for line in lines:
+        line = line.strip()
+        
+        if not line:
+            # Empty line - add accumulated paragraph if any
+            if current_paragraph:
+                doc.add_paragraph(' '.join(current_paragraph))
+                current_paragraph = []
+            continue
+        
+        # Check for headings
+        if line.startswith('### '):
+            if current_paragraph:
+                doc.add_paragraph(' '.join(current_paragraph))
+                current_paragraph = []
+            doc.add_heading(line[4:], level=3)
+        elif line.startswith('## '):
+            if current_paragraph:
+                doc.add_paragraph(' '.join(current_paragraph))
+                current_paragraph = []
+            doc.add_heading(line[3:], level=2)
+        elif line.startswith('# '):
+            if current_paragraph:
+                doc.add_paragraph(' '.join(current_paragraph))
+                current_paragraph = []
+            doc.add_heading(line[2:], level=1)
+        else:
+            # Regular text - accumulate
+            current_paragraph.append(line)
+    
+    # Add any remaining paragraph
+    if current_paragraph:
+        doc.add_paragraph(' '.join(current_paragraph))
+    
+    return doc
+
 # -------------- EXPORT TO DOCX ----------------
 def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
-    # Create UK version
-    doc_uk = Document()
-    doc_uk.add_heading(f"{title} (UK English)", 0)
-    doc_uk.add_paragraph(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    doc_uk.add_paragraph(f"Word Count: {len(article_uk.split())}")
-    doc_uk.add_paragraph(f"Keywords Used: {', '.join(keywords)}")
-    doc_uk.add_paragraph(f"Language: UK English")
-    if document_analysis:
-        doc_uk.add_paragraph(f"Document Analysis: Yes")
-    doc_uk.add_paragraph("")
-    doc_uk.add_paragraph(article_uk)
-    
-    # Create US version
-    doc_us = Document()
-    doc_us.add_heading(f"{title} (US English)", 0)
-    doc_us.add_paragraph(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    doc_us.add_paragraph(f"Word Count: {len(article_us.split())}")
-    doc_us.add_paragraph(f"Keywords Used: {', '.join(keywords)}")
-    doc_us.add_paragraph(f"Language: US English")
-    if document_analysis:
-        doc_us.add_paragraph(f"Document Analysis: Yes")
-    doc_us.add_paragraph("")
-    doc_us.add_paragraph(article_us)
-    
-    # Save files
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
     safe_title = safe_title.replace(' ', '_')
     
     os.makedirs("exports", exist_ok=True)
-    filename_uk = f"exports/{safe_title}_UK_{timestamp}.docx"
-    filename_us = f"exports/{safe_title}_US_{timestamp}.docx"
+    filenames = {}
     
-    doc_uk.save(filename_uk)
-    doc_us.save(filename_us)
+    # Create UK version
+    if article_uk:
+        doc_uk = markdown_to_docx(article_uk, f"{title} (UK English)")
+        
+        # Add metadata at the end
+        doc_uk.add_paragraph("")
+        doc_uk.add_paragraph("---")
+        doc_uk.add_paragraph(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        doc_uk.add_paragraph(f"Word Count: {len(article_uk.split())}")
+        doc_uk.add_paragraph(f"Keywords Used: {', '.join(keywords)}")
+        doc_uk.add_paragraph(f"Language: UK English")
+        if document_analysis:
+            doc_uk.add_paragraph(f"Document Analysis: Yes")
+        
+        filename_uk = f"exports/{safe_title}_UK_{timestamp}.docx"
+        doc_uk.save(filename_uk)
+        filenames['UK'] = filename_uk
     
-    return filename_uk, filename_us
+    # Create US version
+    if article_us:
+        doc_us = markdown_to_docx(article_us, f"{title} (US English)")
+        
+        # Add metadata at the end
+        doc_us.add_paragraph("")
+        doc_us.add_paragraph("---")
+        doc_us.add_paragraph(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        doc_us.add_paragraph(f"Word Count: {len(article_us.split())}")
+        doc_us.add_paragraph(f"Keywords Used: {', '.join(keywords)}")
+        doc_us.add_paragraph(f"Language: US English")
+        if document_analysis:
+            doc_us.add_paragraph(f"Document Analysis: Yes")
+        
+        filename_us = f"exports/{safe_title}_US_{timestamp}.docx"
+        doc_us.save(filename_us)
+        filenames['US'] = filename_us
+    
+    return filenames
 
 # -------------- MAIN EXECUTION ----------------
 if submitted and blog_title:
@@ -444,7 +606,7 @@ if submitted and blog_title:
             with st.spinner("Generating UK English version..."):
                 full_prompt, all_keywords = generate_prompt(
                     blog_title, pasted_facts, pasted_quotes, ai_friendly, 
-                    client_cfg, extra_keywords, document_content, "UK"
+                    client_cfg, extra_keywords, document_content, "UK", word_count_range
                 )
                 article_uk = call_claude(full_prompt)
                 if article_uk:
@@ -455,97 +617,140 @@ if submitted and blog_title:
             with st.spinner("Generating US English version..."):
                 full_prompt, all_keywords = generate_prompt(
                     blog_title, pasted_facts, pasted_quotes, ai_friendly, 
-                    client_cfg, extra_keywords, document_content, "US"
+                    client_cfg, extra_keywords, document_content, "US", word_count_range
                 )
                 article_us = call_claude(full_prompt)
                 if article_us:
                     articles['US'] = article_us
         
         if articles:
+            # Save to session state and history
+            st.session_state.current_articles = articles
+            st.session_state.current_keywords = all_keywords
+            st.session_state.current_title = blog_title
+            st.session_state.document_content = document_content
+            
             # Update stats
             st.session_state.generation_stats['total_blogs'] += len(articles)
             total_words = sum(len(article.split()) for article in articles.values())
             st.session_state.generation_stats['total_words'] += total_words
             
-            # Export files
-            if len(articles) == 2:
-                filename_uk, filename_us = export_docx(blog_title, articles['UK'], articles['US'], all_keywords, document_content)
-            elif 'UK' in articles:
-                filename_uk, _ = export_docx(blog_title, articles['UK'], "", all_keywords, document_content)
-            else:
-                _, filename_us = export_docx(blog_title, "", articles['US'], all_keywords, document_content)
-            
-            # Success message
-            st.markdown("""
-            <div class="success-message">
-                <h4>Blog articles generated successfully!</h4>
-                <p>Your content has been created and is ready for download.</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Download buttons
-            st.markdown("### Download Options")
-            download_col1, download_col2 = st.columns(2)
-            
-            with download_col1:
-                if 'UK' in articles:
-                    st.download_button(
-                        "Download UK Version",
-                        data=open(filename_uk, "rb").read(),
-                        file_name=os.path.basename(filename_uk),
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
-            
-            with download_col2:
-                if 'US' in articles:
-                    st.download_button(
-                        "Download US Version",
-                        data=open(filename_us, "rb").read(),
-                        file_name=os.path.basename(filename_us),
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
-            
-            # Preview sections
-            st.markdown("---")
-            st.markdown("### Article Preview")
-            
-            # Create tabs for different versions
-            if len(articles) == 2:
-                tab1, tab2 = st.tabs(["UK English", "US English"])
-                
-                with tab1:
-                    if show_word_count:
-                        st.info(f"Word Count: {len(articles['UK'].split())} words")
-                    if show_keywords:
-                        st.info(f"Keywords: {', '.join(all_keywords)}")
-                    st.markdown(articles['UK'])
-                
-                with tab2:
-                    if show_word_count:
-                        st.info(f"Word Count: {len(articles['US'].split())} words")
-                    if show_keywords:
-                        st.info(f"Keywords: {', '.join(all_keywords)}")
-                    st.markdown(articles['US'])
-            
-            elif 'UK' in articles:
-                if show_word_count:
-                    st.info(f"Word Count: {len(articles['UK'].split())} words")
-                if show_keywords:
-                    st.info(f"Keywords: {', '.join(all_keywords)}")
-                st.markdown(articles['UK'])
-            
-            else:
-                if show_word_count:
-                    st.info(f"Word Count: {len(articles['US'].split())} words")
-                if show_keywords:
-                    st.info(f"Keywords: {', '.join(all_keywords)}")
-                st.markdown(articles['US'])
-        
-        else:
-            st.error("Failed to generate articles. Please try again.")
+            # Save to history
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            save_to_history(blog_title, articles, all_keywords, timestamp)
 
 elif submitted:
     st.warning("Please enter a blog title before generating articles.")
+
+# Display generated articles or loaded from history
+if st.session_state.current_articles:
+    articles = st.session_state.current_articles
+    
+    # Success message
+    st.markdown("""
+    <div class="success-message">
+        <h4>Blog articles ready!</h4>
+        <p>Review your content below. You can request revisions before downloading.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Revision section
+    st.markdown("### Request Revisions")
+    with st.container():
+        revision_request = st.text_area(
+            "What would you like to change?",
+            placeholder="e.g., 'Make the introduction more engaging', 'Add more statistics in the second section', 'Change the tone to be more formal'",
+            help="Describe specific changes you'd like to make to the article"
+        )
+        
+        if revision_request:
+            col1, col2 = st.columns(2)
+            with col1:
+                if 'UK' in articles and st.button("Revise UK Version", type="secondary"):
+                    with st.spinner("Revising UK version..."):
+                        revised_uk = revise_article(articles['UK'], revision_request, "UK")
+                        if revised_uk:
+                            st.session_state.current_articles['UK'] = revised_uk
+                            st.success("UK version revised!")
+                            st.rerun()
+            
+            with col2:
+                if 'US' in articles and st.button("Revise US Version", type="secondary"):
+                    with st.spinner("Revising US version..."):
+                        revised_us = revise_article(articles['US'], revision_request, "US")
+                        if revised_us:
+                            st.session_state.current_articles['US'] = revised_us
+                            st.success("US version revised!")
+                            st.rerun()
+    
+    st.markdown("---")
+    
+    # Export files for download
+    filenames = export_docx(
+        st.session_state.get('current_title', 'Blog Article'),
+        articles.get('UK', ''),
+        articles.get('US', ''),
+        st.session_state.get('current_keywords', []),
+        st.session_state.get('document_content', '')
+    )
+    
+    # Download buttons
+    st.markdown("### Download Final Articles")
+    download_col1, download_col2 = st.columns(2)
+    
+    with download_col1:
+        if 'UK' in articles and 'UK' in filenames:
+            st.download_button(
+                "📥 Download UK Version",
+                data=open(filenames['UK'], "rb").read(),
+                file_name=os.path.basename(filenames['UK']),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+    
+    with download_col2:
+        if 'US' in articles and 'US' in filenames:
+            st.download_button(
+                "📥 Download US Version",
+                data=open(filenames['US'], "rb").read(),
+                file_name=os.path.basename(filenames['US']),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+    
+    # Preview sections
+    st.markdown("---")
+    st.markdown("### Article Preview")
+    
+    # Create tabs for different versions
+    if len(articles) == 2:
+        tab1, tab2 = st.tabs(["UK English", "US English"])
+        
+        with tab1:
+            if show_word_count:
+                st.info(f"Word Count: {len(articles['UK'].split())} words")
+            if show_keywords and 'current_keywords' in st.session_state:
+                st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+            st.markdown(articles['UK'])
+        
+        with tab2:
+            if show_word_count:
+                st.info(f"Word Count: {len(articles['US'].split())} words")
+            if show_keywords and 'current_keywords' in st.session_state:
+                st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+            st.markdown(articles['US'])
+    
+    elif 'UK' in articles:
+        if show_word_count:
+            st.info(f"Word Count: {len(articles['UK'].split())} words")
+        if show_keywords and 'current_keywords' in st.session_state:
+            st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+        st.markdown(articles['UK'])
+    
+    else:
+        if show_word_count:
+            st.info(f"Word Count: {len(articles['US'].split())} words")
+        if show_keywords and 'current_keywords' in st.session_state:
+            st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+        st.markdown(articles['US'])
 
 # Footer
 st.markdown("---")
