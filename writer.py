@@ -80,7 +80,7 @@ def process_uploaded_file(uploaded_file):
 
 # -------------- STREAMLIT UI ----------------
 st.set_page_config(
-    page_title="Alvan, The Marketing Junction", 
+    page_title="AIvan, The Marketing Junction", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -188,8 +188,8 @@ st.markdown("""
 # Header
 st.markdown("""
 <div class="main-header">
-    <h1>Hi, I am Alvan!</h1>
-    <p>Advanced AI-powered blog writing tool using Claude Anthropic</p>
+    <h1>Hi, I am "AI-van"!</h1>
+    <p>The Marketing Junction's advanced AI-powered blog writing tool based on the human inputs and approaches of Evan.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -206,20 +206,22 @@ with st.sidebar:
     
     # Language versions
     st.markdown("### Language Versions")
-    generate_uk = st.checkbox("Generate UK English Version", value=True)
-    generate_us = st.checkbox("Generate US English Version", value=True)
+    generate_uk = st.checkbox("Generate UK English Version", value=False)
+    generate_us = st.checkbox("Generate US English Version", value=False)
     
     # SEO Settings
     st.markdown("### SEO Settings")
+    
+    # Specific Keywords moved up
+    extra_keywords = st.text_input(
+        "Any specific Keywords",
+        placeholder="keyword1, keyword2, keyword3",
+        help="Comma-separated keywords to include"
+    )
+    
     ai_friendly = st.checkbox(
         "AI-Friendly Formatting (AEO Optimized)",
         help="Format content for AI search engines with Q&A structure"
-    )
-    
-    extra_keywords = st.text_input(
-        "Additional Keywords",
-        placeholder="keyword1, keyword2, keyword3",
-        help="Comma-separated keywords to include"
     )
     
     # Export options
