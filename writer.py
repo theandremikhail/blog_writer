@@ -114,6 +114,8 @@ if 'current_articles' not in st.session_state:
     st.session_state.current_articles = {}
 if 'editing_mode' not in st.session_state:
     st.session_state.editing_mode = False
+if 'use_generated_title' not in st.session_state:
+    st.session_state.use_generated_title = False
 
 # Professional CSS styling
 st.markdown("""
@@ -292,6 +294,8 @@ with st.sidebar:
         help="Add a dedicated section discussing how this topic affects recruitment and talent acquisition"
     )
     
+
+    
     # Export options
     st.markdown("### Export Options")
     export_format = st.selectbox(
@@ -319,12 +323,19 @@ with col1:
     st.markdown('<div class="section-header"><h3>Blog Content Setup</h3></div>', unsafe_allow_html=True)
     
     with st.form("blog_form"):
-        # Blog title
-        blog_title = st.text_input(
-            "Blog Title",
-            placeholder="Enter your compelling blog topic here...",
-            help="This will be the main title of your blog post"
-        )
+        # Blog title with generate option
+        title_col1, title_col2 = st.columns([3, 1])
+        
+        with title_col1:
+            blog_title = st.text_input(
+                "Blog Title/Topic",
+                placeholder="Enter your compelling blog topic here...",
+                help="This will be the main title of your blog post"
+            )
+        
+        with title_col2:
+            st.markdown("<br>", unsafe_allow_html=True)  # Add spacing
+            generate_title_btn = st.form_submit_button("Generate Title", use_container_width=True)
         
         # Content inputs
         st.markdown("### Content Inputs")
@@ -392,8 +403,45 @@ with col2:
         st.metric("Avg Words/Blog", 
                  st.session_state.generation_stats['total_words'] // max(1, st.session_state.generation_stats['total_blogs']))
 
-# -------------- CLAUDE PROMPT HELPER ----------------
-def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500", include_hiring_impact=False):
+# -------------- TITLE GENERATION ----------------
+def generate_title_only(topic, client_cfg, custom_keywords=""):
+    """Generate only a title for the given topic"""
+    base_keywords = client_cfg.get("keywords", [])
+    if custom_keywords:
+        additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
+        for kw in additional_keywords:
+            if kw.lower() not in [k.lower() for k in base_keywords]:
+                base_keywords.append(kw)
+    keywords = ", ".join(base_keywords)
+    
+    prompt = f'''
+Generate ONLY a compelling, SEO-friendly blog title for this topic: "{topic}"
+
+Requirements:
+- Professional and engaging
+- Incorporate relevant keywords naturally
+- Clear and specific
+- 8-15 words long
+- Should work for a recruitment/HR industry blog
+- Keywords to consider: {keywords}
+
+Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, just the title text.
+'''
+    
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=100,
+            temperature=0.8,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        st.error(f"Error generating title: {str(e)}")
+        return None
+
+# -------------- CLAUDE PROMPT HELPER - ENHANCED FOR WORD COUNT ----------------
+def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500", include_hiring_impact=False, generate_title=False):
     base_keywords = client_cfg.get("keywords", [])
     if custom_keywords:
         additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
@@ -414,96 +462,157 @@ def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords=""
     except:
         min_words, max_words = 750, 1500
     
+    # Calculate target word count (aim for higher end of range)
+    target_words = min_words + int((max_words - min_words) * 0.75)  # Aim for 75% of range
+    
+    # Calculate section word requirements based on target
+    intro_words = max(250, int(target_words * 0.15))
+    section_words = max(350, int(target_words * 0.18))
+    final_words = max(300, int(target_words * 0.16))
+    
     hiring_impact_section = ""
     if include_hiring_impact:
-        hiring_impact_section = """
-REQUIRED SECTION - Impact on Hiring:
-You MUST include a dedicated section titled "**The Impact on Hiring**" or "**How This Affects Recruitment**" that discusses:
-- How the topic relates to talent acquisition and recruitment
-- What it means for hiring managers and HR professionals
-- How it might change recruitment strategies or candidate expectations
-- The implications for employer branding and talent attraction
-- Specific recruitment challenges or opportunities this creates
-This section alone should be at least 200-300 words.
+        hiring_impact_section = f"""
+MANDATORY SECTION - Impact on Hiring:
+Write a section titled "**The Impact on Hiring**" or "**How This Affects Recruitment**" ({section_words}+ words MINIMUM)
+Cover ALL of these points with specific examples:
+- How the topic relates to talent acquisition and recruitment (with 2-3 specific scenarios)
+- What it means for hiring managers and HR professionals (with practical examples)
+- How it might change recruitment strategies or candidate expectations (with case studies)
+- The implications for employer branding and talent attraction (with real-world applications)
+- Specific recruitment challenges or opportunities this creates (with solutions)
 """
     
+    # Ultra-aggressive prompt with multiple enforcement layers
     prompt = f'''
-CRITICAL INSTRUCTION: This article MUST be between {min_words} and {max_words} words. You are writing for a professional blog that requires substantial, in-depth content. Short articles are not acceptable.
+CRITICAL ENFORCEMENT: THIS ARTICLE MUST BE {target_words} WORDS MINIMUM. 
 
-Write a comprehensive, in-depth, and sophisticated blog article in {language_instruction} {spelling_note} about: "{title}"
+IF YOU WRITE LESS THAN {min_words} WORDS, THE ARTICLE IS REJECTED.
 
-WORD COUNT ENFORCEMENT:
-- The TOTAL article must be {min_words}-{max_words} words
-- This is MANDATORY - do not write less than {min_words} words
-- Each main section should be 200-400 words minimum
-- The introduction should be 150-200 words
-- The final section should be 200-300 words
-- If you're below {min_words} words, expand sections with more examples, analysis, and detail
+Write an EXTREMELY comprehensive, detailed blog article in {language_instruction} {spelling_note} about: "{title}"
 
-Audience: knowledgeable professionals in the industry.
-Tone: {client_cfg.get("tone", "informative and engaging")}.
-Perspective: Professional recruitment agency (don't mention this explicitly).
-Avoid: Em/En dashes, clichéd phrases like 'in the world of', generic conclusions.
+ABSOLUTE WORD COUNT REQUIREMENTS:
+- MINIMUM TOTAL: {min_words} words (NOT NEGOTIABLE)
+- TARGET TOTAL: {target_words} words (AIM FOR THIS)
+- MAXIMUM TOTAL: {max_words} words
 
-QUALITY AND LENGTH REQUIREMENTS:
-- Write with sophistication and depth - this is for a professional audience
-- Each paragraph should be 3-5 sentences minimum
-- Include detailed analysis, not just surface-level observations
-- Provide specific examples, case studies, or scenarios in EVERY section
-- Explore multiple angles and perspectives on the topic
-- Include statistics, data points, or research findings where relevant
-- Discuss implications, consequences, and future considerations
-- Add context, background, and thorough explanations
-- Include actionable insights and practical applications
-- Use varied sentence structures and rich vocabulary
-- DO NOT write brief overviews - write comprehensive explorations
+MANDATORY SECTION LENGTHS (THESE ARE MINIMUMS, NOT TARGETS):
+1. Introduction: {intro_words}+ words
+2. First Main Section: {section_words}+ words  
+3. Second Main Section: {section_words}+ words
+4. Third Main Section: {section_words}+ words
+{f"5. Hiring Impact Section: {section_words}+ words" if include_hiring_impact else ""}
+{f"6" if include_hiring_impact else "5"}. Final Forward Section: {final_words}+ words
 
-FORMATTING REQUIREMENTS:
-- All headings and subheadings MUST be in bold using **text** markdown formatting
-- Main headings should be: **## Heading Text**
-- Subheadings should be: **### Subheading Text**
+TOTAL MINIMUM FROM SECTIONS: {intro_words + (3 * section_words) + (section_words if include_hiring_impact else 0) + final_words} words
 
-STRUCTURE REQUIREMENTS:
-1. Introduction (150-200 words): Set context, explain importance, preview main points
-2. First main section (250-400 words): Deep dive into primary aspect
-3. Second main section (250-400 words): Explore secondary considerations
-4. Third main section (250-400 words): Analyze implications or applications
-{f"5. Hiring Impact section (200-300 words): As specified below" if include_hiring_impact else ""}
-{f"{5 if include_hiring_impact else 4}." if include_hiring_impact else "4."} Final forward-looking section (200-300 words): Future outlook and actionable takeaways
+EXPANSION REQUIREMENTS FOR EVERY SECTION:
+Each section MUST contain ALL of the following:
+1. Opening statement (2-3 sentences)
+2. Main argument with context (3-4 sentences)
+3. First detailed example or case study (4-5 sentences)
+4. Analysis of the example (3-4 sentences)
+5. Second detailed example or scenario (4-5 sentences)
+6. Statistical data or research findings (2-3 sentences)
+7. Implications and consequences (3-4 sentences)
+8. Additional perspective or counterpoint (3-4 sentences)
+9. Practical applications (3-4 sentences)
+10. Transition to next section (2-3 sentences)
 
-CRITICAL INSTRUCTION: DO NOT end the article with a section called "Conclusion" or "In Summary". End with an engaging final section with a creative title like "**The Path Forward**", "**Embracing Tomorrow's Opportunities**", "**Your Next Strategic Move**", "**Building on These Foundations**", etc.
+PARAGRAPH STRUCTURE RULES:
+- EVERY paragraph must be 5-7 sentences (not 3-5, not 4-6, but 5-7)
+- Use compound sentences with multiple clauses
+- Include supporting details in EVERY sentence
+- Add "which means that..." explanations
+- Include "for instance..." or "specifically..." examples
+- Use "moreover..." and "furthermore..." to add depth
+- Every claim needs evidence or example
 
-{hiring_impact_section}
+CONTENT DEPTH REQUIREMENTS:
+For EVERY main point you make, you MUST:
+1. State the point (1 sentence)
+2. Explain why it matters (2-3 sentences)
+3. Provide a specific example (2-3 sentences)
+4. Analyze the implications (2-3 sentences)
+5. Connect to broader context (2-3 sentences)
+This means EVERY main point = 8-12 sentences minimum
 
-DOCUMENT ANALYSIS:
-{f"Supporting Document Content: {document_content}" if document_content else "No supporting document provided."}
+Audience: knowledgeable professionals
+Tone: {client_cfg.get("tone", "informative and engaging")}
+Perspective: Professional recruitment agency
 
-CONTENT REQUIREMENTS:
-- Include SEO-friendly headings and subheadings (all in bold)
-- Use proper {language_instruction} grammar and spelling
-- Keywords to naturally incorporate: {keywords}
-- Key facts to include: {facts}
-- Quotes to incorporate: {quotes}
+FORMATTING:
+- All headings use **text** for bold
+- Main headings: **## Heading**
+- Subheadings: **### Subheading**
 
-{'AI-FRIENDLY FORMATTING: Use H2 headings as questions, provide brief answers first, then elaborate with detailed explanations of at least 200 words per section.' if ai_opt else 'Use traditional blog formatting with descriptive headings.'}
+STRUCTURE WITH EXACT MINIMUMS:
+**## Introduction** ({intro_words}+ words)
+- Set comprehensive context
+- Preview all sections in detail
+- Establish importance with statistics
+- Include industry background
 
-FINAL REMINDER: 
-- This article MUST be {min_words}-{max_words} words total
-- Each section needs substantial content with examples and analysis
-- Do not submit a brief article - it will not meet client requirements
-- Count your words and ensure you meet the minimum before finalizing
+**## [First Main Topic]** ({section_words}+ words)
+- Multiple detailed paragraphs
+- Two extended examples minimum
+- Statistical support
+- Deep analysis
 
-Please generate a well-structured, informative, and COMPREHENSIVE blog article that meets ALL word count requirements.
+**## [Second Main Topic]** ({section_words}+ words)
+- Different angle with depth
+- Case studies and scenarios
+- Research findings
+- Practical implications
+
+**## [Third Main Topic]** ({section_words}+ words)
+- Advanced considerations
+- Multiple perspectives
+- Future implications
+- Actionable insights
+
+{hiring_impact_section if include_hiring_impact else ""}
+
+**## [Creative Final Section Title]** ({final_words}+ words)
+(Use titles like "The Path Forward", "Strategic Next Steps", "Building Tomorrow's Framework")
+- Future outlook with specifics
+- Multiple actionable strategies
+- Industry predictions
+- Call to action
+
+NEVER use "Conclusion" or "Summary" as the final section.
+
+DOCUMENT CONTEXT:
+{f"Document: {document_content[:3000]}..." if document_content else "No document provided."}
+
+INCORPORATE:
+- Keywords naturally: {keywords}
+- Facts provided: {facts if facts else "Include relevant industry statistics throughout"}
+- Quotes: {quotes if quotes else "Include expert perspectives and insights"}
+
+VERIFICATION CHECKLIST:
+Before submitting, confirm:
+□ Total word count is AT LEAST {min_words} words
+□ Each section meets its minimum word requirement
+□ Every paragraph has 5-7 sentences
+□ Every main point has 8-12 sentences of coverage
+□ Examples are detailed and specific
+□ Statistics and data are included
+□ Analysis is deep, not surface-level
+
+FINAL INSTRUCTION:
+Count your words. If below {min_words}, you MUST expand EVERY section with more detail, more examples, more analysis, and more context until you reach AT LEAST {target_words} words.
+
+DO NOT SUBMIT AN ARTICLE UNDER {min_words} WORDS.
 '''
     return prompt, base_keywords
 
-
-# -------------- ARTICLE GENERATION ----------------
+# -------------- ARTICLE GENERATION - ENHANCED ----------------
 def call_claude(prompt):
     try:
         response = anthropic_client.messages.create(
             model="claude-3-5-sonnet-20241022",
-            max_tokens=4000,
+            max_tokens=6000,  # Increased from 4000 to ensure full articles
             temperature=0.7,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -531,18 +640,19 @@ IMPORTANT GUIDELINES:
 - Keep all other content intact unless the revision specifically requires broader changes
 - Ensure the article remains coherent after revisions
 - Do not add a conclusion section - maintain the forward-looking final section
+- MAINTAIN THE WORD COUNT - do not significantly reduce the article length
 
 Please provide the revised article with the requested changes implemented.
 '''
     
     return call_claude(prompt)
 
-# -------------- CONVERT MARKDOWN TO DOCX ----------------
+# -------------- CONVERT MARKDOWN TO DOCX - SIMPLIFIED ----------------
 def markdown_to_docx(content, title):
-    """Convert markdown content to DOCX format matching the preview"""
+    """Convert markdown content to DOCX format - simplified without language markers"""
     doc = Document()
     
-    # Add title
+    # Add title (without language marker)
     doc.add_heading(title, 0)
     
     # Process the content line by line
@@ -552,6 +662,10 @@ def markdown_to_docx(content, title):
     for line in lines:
         line = line.strip()
         
+        # Skip lines that are just "TITLE:" markers if present
+        if line.startswith("TITLE:"):
+            continue
+            
         if not line:
             # Empty line - add accumulated paragraph if any
             if current_paragraph:
@@ -610,7 +724,7 @@ def markdown_to_docx(content, title):
     
     return doc
 
-# -------------- EXPORT TO DOCX ----------------
+# -------------- EXPORT TO DOCX - SIMPLIFIED ----------------
 def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
@@ -619,19 +733,25 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     os.makedirs("exports", exist_ok=True)
     filenames = {}
     
+    # Extract actual title if it was generated
+    actual_title = title
+    
     # Create UK version
     if article_uk:
-        doc_uk = markdown_to_docx(article_uk, f"{title} (UK English)")
+        # Extract generated title if present
+        if "TITLE:" in article_uk:
+            title_line = article_uk.split('\n')[0]
+            if title_line.startswith("TITLE:"):
+                actual_title = title_line.replace("TITLE:", "").strip()
+                article_uk = '\n'.join(article_uk.split('\n')[1:])  # Remove title line from content
         
-        # Add metadata at the end
+        doc_uk = markdown_to_docx(article_uk, actual_title)  # Use title without language marker
+        
+        # Add minimal metadata at the end
         doc_uk.add_paragraph("")
         doc_uk.add_paragraph("---")
-        doc_uk.add_paragraph(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         doc_uk.add_paragraph(f"Word Count: {len(article_uk.split())}")
-        doc_uk.add_paragraph(f"Keywords Used: {', '.join(keywords)}")
-        doc_uk.add_paragraph(f"Language: UK English")
-        if document_analysis:
-            doc_uk.add_paragraph(f"Document Analysis: Yes")
+        doc_uk.add_paragraph(f"Keywords: {', '.join(keywords)}")
         
         filename_uk = f"exports/{safe_title}_UK_{timestamp}.docx"
         doc_uk.save(filename_uk)
@@ -639,25 +759,37 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     
     # Create US version
     if article_us:
-        doc_us = markdown_to_docx(article_us, f"{title} (US English)")
+        # Extract generated title if present
+        if "TITLE:" in article_us:
+            title_line = article_us.split('\n')[0]
+            if title_line.startswith("TITLE:"):
+                actual_title = title_line.replace("TITLE:", "").strip()
+                article_us = '\n'.join(article_us.split('\n')[1:])  # Remove title line from content
         
-        # Add metadata at the end
+        doc_us = markdown_to_docx(article_us, actual_title)  # Use title without language marker
+        
+        # Add minimal metadata at the end
         doc_us.add_paragraph("")
         doc_us.add_paragraph("---")
-        doc_us.add_paragraph(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         doc_us.add_paragraph(f"Word Count: {len(article_us.split())}")
-        doc_us.add_paragraph(f"Keywords Used: {', '.join(keywords)}")
-        doc_us.add_paragraph(f"Language: US English")
-        if document_analysis:
-            doc_us.add_paragraph(f"Document Analysis: Yes")
+        doc_us.add_paragraph(f"Keywords: {', '.join(keywords)}")
         
         filename_us = f"exports/{safe_title}_US_{timestamp}.docx"
         doc_us.save(filename_us)
         filenames['US'] = filename_us
     
-    return filenames
+    return filenames, actual_title
 
 # -------------- MAIN EXECUTION ----------------
+# Handle title generation separately
+if generate_title_btn and blog_title:
+    with st.spinner("Generating title suggestion..."):
+        client_cfg = load_client_config(client_name)
+        suggested_title = generate_title_only(blog_title, client_cfg, extra_keywords)
+        if suggested_title:
+            st.success(f"Suggested Title: **{suggested_title}**")
+            st.info("Copy the title above and paste it in the Blog Title field if you'd like to use it.")
+
 if submitted and blog_title:
     if not (generate_uk or generate_us):
         st.error("Please select at least one language version to generate.")
@@ -684,7 +816,8 @@ if submitted and blog_title:
             with st.spinner("Generating UK English version..."):
                 full_prompt, all_keywords = generate_prompt(
                     blog_title, pasted_facts, pasted_quotes, ai_friendly, 
-                    client_cfg, extra_keywords, document_content, "UK", word_count_range, include_hiring_section
+                    client_cfg, extra_keywords, document_content, "UK", word_count_range, 
+                    include_hiring_section, generate_title=False
                 )
                 article_uk = call_claude(full_prompt)
                 if article_uk:
@@ -695,7 +828,8 @@ if submitted and blog_title:
             with st.spinner("Generating US English version..."):
                 full_prompt, all_keywords = generate_prompt(
                     blog_title, pasted_facts, pasted_quotes, ai_friendly, 
-                    client_cfg, extra_keywords, document_content, "US", word_count_range, include_hiring_section
+                    client_cfg, extra_keywords, document_content, "US", word_count_range, 
+                    include_hiring_section, generate_title=False
                 )
                 article_us = call_claude(full_prompt)
                 if article_us:
@@ -764,7 +898,7 @@ if st.session_state.current_articles:
     st.markdown("---")
     
     # Export files for download
-    filenames = export_docx(
+    filenames, extracted_title = export_docx(
         st.session_state.get('current_title', 'Blog Article'),
         articles.get('UK', ''),
         articles.get('US', ''),
@@ -798,37 +932,67 @@ if st.session_state.current_articles:
     st.markdown("---")
     st.markdown("### Article Preview")
     
+    # Extract and display generated title if present
+    display_title = st.session_state.get('current_title', 'Blog Article')
+    if articles:
+        first_article = list(articles.values())[0]
+        if "TITLE:" in first_article:
+            title_line = first_article.split('\n')[0]
+            if title_line.startswith("TITLE:"):
+                display_title = title_line.replace("TITLE:", "").strip()
+                st.info(f"Generated Title: **{display_title}**")
+    
     # Create tabs for different versions
     if len(articles) == 2:
         tab1, tab2 = st.tabs(["UK English", "US English"])
         
         with tab1:
+            # Clean article for display (remove TITLE: line if present)
+            article_uk_display = articles['UK']
+            if "TITLE:" in article_uk_display:
+                article_uk_display = '\n'.join(article_uk_display.split('\n')[1:])
+            
             if show_word_count:
-                st.info(f"Word Count: {len(articles['UK'].split())} words")
+                st.info(f"Word Count: {len(article_uk_display.split())} words")
             if show_keywords and 'current_keywords' in st.session_state:
                 st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
-            st.markdown(articles['UK'])
+            st.markdown(article_uk_display)
         
         with tab2:
+            # Clean article for display (remove TITLE: line if present)
+            article_us_display = articles['US']
+            if "TITLE:" in article_us_display:
+                article_us_display = '\n'.join(article_us_display.split('\n')[1:])
+            
             if show_word_count:
-                st.info(f"Word Count: {len(articles['US'].split())} words")
+                st.info(f"Word Count: {len(article_us_display.split())} words")
             if show_keywords and 'current_keywords' in st.session_state:
                 st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
-            st.markdown(articles['US'])
+            st.markdown(article_us_display)
     
     elif 'UK' in articles:
+        # Clean article for display
+        article_uk_display = articles['UK']
+        if "TITLE:" in article_uk_display:
+            article_uk_display = '\n'.join(article_uk_display.split('\n')[1:])
+        
         if show_word_count:
-            st.info(f"Word Count: {len(articles['UK'].split())} words")
+            st.info(f"Word Count: {len(article_uk_display.split())} words")
         if show_keywords and 'current_keywords' in st.session_state:
             st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
-        st.markdown(articles['UK'])
+        st.markdown(article_uk_display)
     
     else:
+        # Clean article for display
+        article_us_display = articles['US']
+        if "TITLE:" in article_us_display:
+            article_us_display = '\n'.join(article_us_display.split('\n')[1:])
+        
         if show_word_count:
-            st.info(f"Word Count: {len(articles['US'].split())} words")
+            st.info(f"Word Count: {len(article_us_display.split())} words")
         if show_keywords and 'current_keywords' in st.session_state:
             st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
-        st.markdown(articles['US'])
+        st.markdown(article_us_display)
 
 # Footer
 st.markdown("---")
