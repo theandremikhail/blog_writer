@@ -285,6 +285,13 @@ with st.sidebar:
         help="Enter desired word count range (e.g., 750-1500)"
     )
     
+    # Hiring impact section
+    include_hiring_section = st.checkbox(
+        "Include section on impact on hiring?",
+        value=False,
+        help="Add a dedicated section discussing how this topic affects recruitment and talent acquisition"
+    )
+    
     # Export options
     st.markdown("### Export Options")
     export_format = st.selectbox(
@@ -386,7 +393,7 @@ with col2:
                  st.session_state.generation_stats['total_words'] // max(1, st.session_state.generation_stats['total_blogs']))
 
 # -------------- CLAUDE PROMPT HELPER ----------------
-def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500"):
+def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500", include_hiring_impact=False):
     base_keywords = client_cfg.get("keywords", [])
     if custom_keywords:
         additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
@@ -407,43 +414,89 @@ def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords=""
     except:
         min_words, max_words = 750, 1500
     
+    hiring_impact_section = ""
+    if include_hiring_impact:
+        hiring_impact_section = """
+REQUIRED SECTION - Impact on Hiring:
+You MUST include a dedicated section titled "**The Impact on Hiring**" or "**How This Affects Recruitment**" that discusses:
+- How the topic relates to talent acquisition and recruitment
+- What it means for hiring managers and HR professionals
+- How it might change recruitment strategies or candidate expectations
+- The implications for employer branding and talent attraction
+- Specific recruitment challenges or opportunities this creates
+This section alone should be at least 200-300 words.
+"""
+    
     prompt = f'''
-Write a comprehensive blog article in {language_instruction} {spelling_note} about: "{title}"
+CRITICAL INSTRUCTION: This article MUST be between {min_words} and {max_words} words. You are writing for a professional blog that requires substantial, in-depth content. Short articles are not acceptable.
+
+Write a comprehensive, in-depth, and sophisticated blog article in {language_instruction} {spelling_note} about: "{title}"
+
+WORD COUNT ENFORCEMENT:
+- The TOTAL article must be {min_words}-{max_words} words
+- This is MANDATORY - do not write less than {min_words} words
+- Each main section should be 200-400 words minimum
+- The introduction should be 150-200 words
+- The final section should be 200-300 words
+- If you're below {min_words} words, expand sections with more examples, analysis, and detail
 
 Audience: knowledgeable professionals in the industry.
 Tone: {client_cfg.get("tone", "informative and engaging")}.
 Perspective: Professional recruitment agency (don't mention this explicitly).
 Avoid: Em/En dashes, clichéd phrases like 'in the world of', generic conclusions.
 
-CRITICAL INSTRUCTION: DO NOT end the article with a section called "Conclusion" or "In Summary" or any similar concluding section title. Instead, end with an engaging final section that has a creative title that ties together the main themes while looking forward or providing actionable insights. Examples of good final section titles: "The Path Forward", "Embracing Tomorrow's Opportunities", "Your Next Strategic Move", "Building on These Foundations", etc.
+QUALITY AND LENGTH REQUIREMENTS:
+- Write with sophistication and depth - this is for a professional audience
+- Each paragraph should be 3-5 sentences minimum
+- Include detailed analysis, not just surface-level observations
+- Provide specific examples, case studies, or scenarios in EVERY section
+- Explore multiple angles and perspectives on the topic
+- Include statistics, data points, or research findings where relevant
+- Discuss implications, consequences, and future considerations
+- Add context, background, and thorough explanations
+- Include actionable insights and practical applications
+- Use varied sentence structures and rich vocabulary
+- DO NOT write brief overviews - write comprehensive explorations
+
+FORMATTING REQUIREMENTS:
+- All headings and subheadings MUST be in bold using **text** markdown formatting
+- Main headings should be: **## Heading Text**
+- Subheadings should be: **### Subheading Text**
+
+STRUCTURE REQUIREMENTS:
+1. Introduction (150-200 words): Set context, explain importance, preview main points
+2. First main section (250-400 words): Deep dive into primary aspect
+3. Second main section (250-400 words): Explore secondary considerations
+4. Third main section (250-400 words): Analyze implications or applications
+{f"5. Hiring Impact section (200-300 words): As specified below" if include_hiring_impact else ""}
+{f"{5 if include_hiring_impact else 4}." if include_hiring_impact else "4."} Final forward-looking section (200-300 words): Future outlook and actionable takeaways
+
+CRITICAL INSTRUCTION: DO NOT end the article with a section called "Conclusion" or "In Summary". End with an engaging final section with a creative title like "**The Path Forward**", "**Embracing Tomorrow's Opportunities**", "**Your Next Strategic Move**", "**Building on These Foundations**", etc.
+
+{hiring_impact_section}
 
 DOCUMENT ANALYSIS:
 {f"Supporting Document Content: {document_content}" if document_content else "No supporting document provided."}
 
-Please analyze the supporting document (if provided) and extract relevant insights, statistics, and information that can enhance the blog article. Use this information naturally throughout the content.
-
 CONTENT REQUIREMENTS:
-- Include SEO-friendly headings and subheadings
+- Include SEO-friendly headings and subheadings (all in bold)
 - Use proper {language_instruction} grammar and spelling
-- Structure: Introduction, 3-4 main sections, then a final forward-looking section (NOT called "Conclusion")
-- Word count: {min_words}-{max_words} words
 - Keywords to naturally incorporate: {keywords}
 - Key facts to include: {facts}
 - Quotes to incorporate: {quotes}
 
-{'AI-FRIENDLY FORMATTING: Use H2 headings as questions, provide brief answers first, then elaborate with detailed explanations.' if ai_opt else 'Use traditional blog formatting with descriptive headings.'}
+{'AI-FRIENDLY FORMATTING: Use H2 headings as questions, provide brief answers first, then elaborate with detailed explanations of at least 200 words per section.' if ai_opt else 'Use traditional blog formatting with descriptive headings.'}
 
-IMPORTANT GUIDELINES:
-- Do not invent statistics or fake data
-- You may create realistic quotes but not fabricate specific events
-- If using document content, cite it as "according to recent research" or "industry data shows"
-- Make the content engaging and actionable for professionals
-- Include practical insights and takeaways
-- End with a forward-looking, action-oriented final section (not a traditional conclusion)
+FINAL REMINDER: 
+- This article MUST be {min_words}-{max_words} words total
+- Each section needs substantial content with examples and analysis
+- Do not submit a brief article - it will not meet client requirements
+- Count your words and ensure you meet the minimum before finalizing
 
-Please generate a well-structured, informative blog article that incorporates all provided information naturally and professionally.
+Please generate a well-structured, informative, and COMPREHENSIVE blog article that meets ALL word count requirements.
 '''
     return prompt, base_keywords
+
 
 # -------------- ARTICLE GENERATION ----------------
 def call_claude(prompt):
@@ -506,22 +559,47 @@ def markdown_to_docx(content, title):
                 current_paragraph = []
             continue
         
-        # Check for headings
-        if line.startswith('### '):
+        # Check for headings with bold markers
+        if line.startswith('**### ') and line.endswith('**'):
             if current_paragraph:
                 doc.add_paragraph(' '.join(current_paragraph))
                 current_paragraph = []
-            doc.add_heading(line[4:], level=3)
+            heading_text = line[6:-2]  # Remove **### and **
+            h = doc.add_heading(heading_text, level=3)
+            h.runs[0].bold = True
+        elif line.startswith('**## ') and line.endswith('**'):
+            if current_paragraph:
+                doc.add_paragraph(' '.join(current_paragraph))
+                current_paragraph = []
+            heading_text = line[5:-2]  # Remove **## and **
+            h = doc.add_heading(heading_text, level=2)
+            h.runs[0].bold = True
+        elif line.startswith('**# ') and line.endswith('**'):
+            if current_paragraph:
+                doc.add_paragraph(' '.join(current_paragraph))
+                current_paragraph = []
+            heading_text = line[4:-2]  # Remove **# and **
+            h = doc.add_heading(heading_text, level=1)
+            h.runs[0].bold = True
+        # Also check for headings without bold markers (fallback)
+        elif line.startswith('### '):
+            if current_paragraph:
+                doc.add_paragraph(' '.join(current_paragraph))
+                current_paragraph = []
+            h = doc.add_heading(line[4:], level=3)
+            h.runs[0].bold = True
         elif line.startswith('## '):
             if current_paragraph:
                 doc.add_paragraph(' '.join(current_paragraph))
                 current_paragraph = []
-            doc.add_heading(line[3:], level=2)
+            h = doc.add_heading(line[3:], level=2)
+            h.runs[0].bold = True
         elif line.startswith('# '):
             if current_paragraph:
                 doc.add_paragraph(' '.join(current_paragraph))
                 current_paragraph = []
-            doc.add_heading(line[2:], level=1)
+            h = doc.add_heading(line[2:], level=1)
+            h.runs[0].bold = True
         else:
             # Regular text - accumulate
             current_paragraph.append(line)
@@ -606,7 +684,7 @@ if submitted and blog_title:
             with st.spinner("Generating UK English version..."):
                 full_prompt, all_keywords = generate_prompt(
                     blog_title, pasted_facts, pasted_quotes, ai_friendly, 
-                    client_cfg, extra_keywords, document_content, "UK", word_count_range
+                    client_cfg, extra_keywords, document_content, "UK", word_count_range, include_hiring_section
                 )
                 article_uk = call_claude(full_prompt)
                 if article_uk:
@@ -617,7 +695,7 @@ if submitted and blog_title:
             with st.spinner("Generating US English version..."):
                 full_prompt, all_keywords = generate_prompt(
                     blog_title, pasted_facts, pasted_quotes, ai_friendly, 
-                    client_cfg, extra_keywords, document_content, "US", word_count_range
+                    client_cfg, extra_keywords, document_content, "US", word_count_range, include_hiring_section
                 )
                 article_us = call_claude(full_prompt)
                 if article_us:
