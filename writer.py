@@ -10,6 +10,7 @@ import io
 from pathlib import Path
 import json
 import re
+import time
 
 # -------------- CONFIG ----------------
 ANTHROPIC_KEY = st.secrets["api_keys"]["anthropic_api_key"]
@@ -383,6 +384,10 @@ with col2:
     show_word_count = st.checkbox("Show Word Count", value=True)
     show_keywords = st.checkbox("Show Keywords Used", value=True)
     
+    # Debug settings
+    st.markdown("### Debug Settings")
+    show_prompt_debug = st.checkbox("Show Prompt Debug Info", value=False, help="Shows the actual prompt being sent to Claude")
+    
     # Generation metrics (placeholder)
     if 'generation_stats' not in st.session_state:
         st.session_state.generation_stats = {
@@ -430,7 +435,7 @@ Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, j
     
     try:
         response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-opus-4-1-20250805",
             max_tokens=100,
             temperature=0.8,
             messages=[{"role": "user", "content": prompt}]
@@ -440,14 +445,12 @@ Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, j
         st.error(f"Error generating title: {str(e)}")
         return None
 
-# -------------- CLAUDE PROMPT HELPER - ENHANCED FOR WORD COUNT ----------------
+# -------------- CLAUDE PROMPT HELPER - SIMPLIFIED AND DIRECT ----------------
 def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500", include_hiring_impact=False, generate_title=False):
     base_keywords = client_cfg.get("keywords", [])
     if custom_keywords:
         additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
-        # Convert base keywords to lowercase for comparison
         base_keywords_lower = [kw.lower() for kw in base_keywords]
-        # Only add keywords that aren't already in the base list
         for kw in additional_keywords:
             if kw not in base_keywords_lower:
                 base_keywords.append(kw)
@@ -456,196 +459,267 @@ def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords=""
     language_instruction = "UK English" if language == "UK" else "US English"
     spelling_note = "(use British spelling, 's' instead of 'z' in words like 'organisation')" if language == "UK" else "(use American spelling, 'z' instead of 's' in words like 'organization')"
     
-    # Parse word range
+    # Parse word range and OVERSHOOT to compensate
     try:
         min_words, max_words = map(int, word_range.split('-'))
     except:
         min_words, max_words = 750, 1500
     
-    # Calculate target word count (aim for higher end of range)
-    target_words = min_words + int((max_words - min_words) * 0.75)  # Aim for 75% of range
-    
-    # Calculate section word requirements based on target
-    intro_words = max(250, int(target_words * 0.15))
-    section_words = max(350, int(target_words * 0.18))
-    final_words = max(300, int(target_words * 0.16))
+    # OVERSHOOT the target to ensure we hit minimum
+    target_words = max_words  # Just aim for maximum
     
     hiring_impact_section = ""
     if include_hiring_impact:
-        hiring_impact_section = f"""
-MANDATORY SECTION - Impact on Hiring:
-Write a section titled "**The Impact on Hiring**" or "**How This Affects Recruitment**" ({section_words}+ words MINIMUM)
-Cover ALL of these points with specific examples:
-- How the topic relates to talent acquisition and recruitment (with 2-3 specific scenarios)
-- What it means for hiring managers and HR professionals (with practical examples)
-- How it might change recruitment strategies or candidate expectations (with case studies)
-- The implications for employer branding and talent attraction (with real-world applications)
-- Specific recruitment challenges or opportunities this creates (with solutions)
+        hiring_impact_section = """
+- **The Impact on Hiring**: 
+
+Detailed section on how this affects recruitment, talent acquisition, hiring managers, employer branding, and recruitment strategies
 """
     
-    # Ultra-aggressive prompt with multiple enforcement layers
+    # Simpler, clearer prompt
     prompt = f'''
-CRITICAL ENFORCEMENT: THIS ARTICLE MUST BE {target_words} WORDS MINIMUM. 
+Write a comprehensive {target_words}-word blog article in {language_instruction} {spelling_note} about: "{title}"
 
-IF YOU WRITE LESS THAN {min_words} WORDS, THE ARTICLE IS REJECTED.
+IMPORTANT: Write EXACTLY {target_words} words. This is a hard requirement.
 
-Write an EXTREMELY comprehensive, detailed blog article in {language_instruction} {spelling_note} about: "{title}"
+Include these sections:
+- **Introduction**:
 
-ABSOLUTE WORD COUNT REQUIREMENTS:
-- MINIMUM TOTAL: {min_words} words (NOT NEGOTIABLE)
-- TARGET TOTAL: {target_words} words (AIM FOR THIS)
-- MAXIMUM TOTAL: {max_words} words
+Comprehensive overview with context and preview of main points and can be more than one paragraph
+- **[Main Section 1]**: 
 
-MANDATORY SECTION LENGTHS (THESE ARE MINIMUMS, NOT TARGETS):
-1. Introduction: {intro_words}+ words
-2. First Main Section: {section_words}+ words  
-3. Second Main Section: {section_words}+ words
-4. Third Main Section: {section_words}+ words
-{f"5. Hiring Impact Section: {section_words}+ words" if include_hiring_impact else ""}
-{f"6" if include_hiring_impact else "5"}. Final Forward Section: {final_words}+ words
+Deep dive into first key aspect with examples and analysis and can be more than one paragraph
+- **[Main Section 2]**: 
 
-TOTAL MINIMUM FROM SECTIONS: {intro_words + (3 * section_words) + (section_words if include_hiring_impact else 0) + final_words} words
+Exploration of second aspect with case studies and data and can be more than one paragraph
+- **[Main Section 3]**: 
 
-EXPANSION REQUIREMENTS FOR EVERY SECTION:
-Each section MUST contain ALL of the following:
-1. Opening statement (2-3 sentences)
-2. Main argument with context (3-4 sentences)
-3. First detailed example or case study (4-5 sentences)
-4. Analysis of the example (3-4 sentences)
-5. Second detailed example or scenario (4-5 sentences)
-6. Statistical data or research findings (2-3 sentences)
-7. Implications and consequences (3-4 sentences)
-8. Additional perspective or counterpoint (3-4 sentences)
-9. Practical applications (3-4 sentences)
-10. Transition to next section (2-3 sentences)
-
-PARAGRAPH STRUCTURE RULES:
-- EVERY paragraph must be 5-7 sentences (not 3-5, not 4-6, but 5-7)
-- Use compound sentences with multiple clauses
-- Include supporting details in EVERY sentence
-- Add "which means that..." explanations
-- Include "for instance..." or "specifically..." examples
-- Use "moreover..." and "furthermore..." to add depth
-- Every claim needs evidence or example
-
-CONTENT DEPTH REQUIREMENTS:
-For EVERY main point you make, you MUST:
-1. State the point (1 sentence)
-2. Explain why it matters (2-3 sentences)
-3. Provide a specific example (2-3 sentences)
-4. Analyze the implications (2-3 sentences)
-5. Connect to broader context (2-3 sentences)
-This means EVERY main point = 8-12 sentences minimum
-
-Audience: knowledgeable professionals
-Tone: {client_cfg.get("tone", "informative and engaging")}
-Perspective: Professional recruitment agency
-
-FORMATTING:
-- All headings use **text** for bold
-- Main headings: **## Heading**
-- Subheadings: **### Subheading**
-
-STRUCTURE WITH EXACT MINIMUMS:
-**## Introduction** ({intro_words}+ words)
-- Set comprehensive context
-- Preview all sections in detail
-- Establish importance with statistics
-- Include industry background
-
-**## [First Main Topic]** ({section_words}+ words)
-- Multiple detailed paragraphs
-- Two extended examples minimum
-- Statistical support
-- Deep analysis
-
-**## [Second Main Topic]** ({section_words}+ words)
-- Different angle with depth
-- Case studies and scenarios
-- Research findings
-- Practical implications
-
-**## [Third Main Topic]** ({section_words}+ words)
-- Advanced considerations
-- Multiple perspectives
-- Future implications
-- Actionable insights
-
+Discussion of challenges, opportunities, and solutions
 {hiring_impact_section if include_hiring_impact else ""}
+- **[Forward-Looking Section]**:
 
-**## [Creative Final Section Title]** ({final_words}+ words)
-(Use titles like "The Path Forward", "Strategic Next Steps", "Building Tomorrow's Framework")
-- Future outlook with specifics
-- Multiple actionable strategies
-- Industry predictions
-- Call to action
+Future outlook and actionable takeaways (NOT a conclusion)
 
-NEVER use "Conclusion" or "Summary" as the final section.
+Requirements:
+- Write detailed, expansive paragraphs (100-150 words each)
+- Include specific examples, statistics, and expert insights throughout
+- Use transitions and elaborate on every point
+- Add single line after headings
+- Incorporate these keywords naturally: {keywords}
+{f"- Include these facts: {facts}" if facts else ""}
+{f"- Include these quotes: {quotes}" if quotes else ""}
+{f"- Reference this material: {document_content[:500]}" if document_content else ""}
 
-DOCUMENT CONTEXT:
-{f"Document: {document_content[:3000]}..." if document_content else "No document provided."}
-
-INCORPORATE:
-- Keywords naturally: {keywords}
-- Facts provided: {facts if facts else "Include relevant industry statistics throughout"}
-- Quotes: {quotes if quotes else "Include expert perspectives and insights"}
-
-VERIFICATION CHECKLIST:
-Before submitting, confirm:
-□ Total word count is AT LEAST {min_words} words
-□ Each section meets its minimum word requirement
-□ Every paragraph has 5-7 sentences
-□ Every main point has 8-12 sentences of coverage
-□ Examples are detailed and specific
-□ Statistics and data are included
-□ Analysis is deep, not surface-level
-
-FINAL INSTRUCTION:
-Count your words. If below {min_words}, you MUST expand EVERY section with more detail, more examples, more analysis, and more context until you reach AT LEAST {target_words} words.
-
-DO NOT SUBMIT AN ARTICLE UNDER {min_words} WORDS.
-'''
+Write the full {target_words}-word article now:'''
+    
     return prompt, base_keywords
 
-# -------------- ARTICLE GENERATION - ENHANCED ----------------
-def call_claude(prompt):
+# -------------- ARTICLE GENERATION WITH RETRY LOGIC ----------------
+def call_claude(prompt, max_tokens=8000, retry_count=3):
+    """Call Claude with retry logic for 529 errors"""
+    for attempt in range(retry_count):
+        try:
+            response = anthropic_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=max_tokens,
+                temperature=0.7,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.content[0].text
+        except Exception as e:
+            error_message = str(e)
+            if "529" in error_message or "overloaded" in error_message.lower():
+                if attempt < retry_count - 1:
+                    wait_time = (2 ** attempt) * 5  # 5, 10, 20 seconds
+                    st.warning(f"API overloaded. Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    st.error("API is overloaded. Please try again in a few minutes.")
+                    return None
+            else:
+                st.error(f"Error calling Claude API: {error_message}")
+                return None
+    return None
+
+# -------------- COMPLETELY REWRITTEN WORD COUNT ENFORCER ----------------
+def ensure_word_count(article, min_words, max_words, language="UK", title="", facts="", quotes="", keywords=[], ai_friendly=False, include_hiring_impact=False):
+    """Completely new approach - never shrink, only expand"""
+    if not article:
+        return article
+    
+    # Clean first
+    clean_lines = []
+    for line in article.split('\n'):
+        if any(x in line.lower() for x in ['word count:', 'total words:', '[total word', 'additional words', '---expanded']):
+            continue
+        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
+            continue
+        clean_lines.append(line)
+    
+    article = '\n'.join(clean_lines).strip()
+    original_word_count = len(article.split())
+    
+    if original_word_count >= min_words:
+        return article  # Already good!
+    
+    # Calculate exactly how many words we need
+    words_needed = min_words - original_word_count + 50  # Small buffer
+    
+    st.warning(f"Article has {original_word_count} words. Need to add {words_needed} more words to reach {min_words} minimum...")
+    
+    # DIFFERENT APPROACH: Ask for expansion without meta-text
+    expansion_prompt = f'''
+I need you to write {words_needed} words of additional content that naturally expands on this article about "{title}".
+
+Current article structure:
+{article}
+
+---
+
+Write {words_needed} words of additional paragraphs that expand the existing topics.
+
+CRITICAL RULES:
+1. DO NOT include any labels like "Additional paragraph for..." or "Here's more content..."
+2. DO NOT describe where content should go or what section it's for
+3. DO NOT use phrases like "To expand on...", "Building on...", "Furthermore to the section on..."
+4. Just write natural, flowing paragraphs as if they were always part of the article
+5. Each paragraph should be 100-150 words of substantive content
+6. Focus on concrete examples, data, analysis, and insights
+7. Write in {language} English
+
+Output ONLY the new paragraphs with no meta-commentary. Write {words_needed} words now:'''
+    
     try:
-        response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=6000,  # Increased from 4000 to ensure full articles
-            temperature=0.7,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text
+        additional_content = call_claude(expansion_prompt, max_tokens=4000, retry_count=3)
+        
+        if additional_content:
+            # Aggressive cleaning of any meta-text that slipped through
+            clean_additions = []
+            for line in additional_content.split('\n'):
+                # Skip lines that are clearly meta-text
+                line_lower = line.lower()
+                if any(phrase in line_lower for phrase in [
+                    'additional paragraph', 'additional content', 'here\'s', 'here is',
+                    'to expand', 'this adds', 'adding to', 'for the', 'section:',
+                    'i\'ll add', 'let me add', 'here are', 'to the section',
+                    'building on', 'furthermore to', 'expanding on the'
+                ]):
+                    continue
+                # Also skip if line starts with common meta-text patterns
+                if line.strip().endswith(':') and len(line.strip()) < 50:
+                    continue
+                clean_additions.append(line)
+            
+            additional_content = '\n'.join(clean_additions).strip()
+            
+            # Combine original + additions
+            expanded_article = article + "\n\n" + additional_content
+            new_word_count = len(expanded_article.split())
+            
+            if new_word_count >= min_words:
+                st.success(f"Successfully expanded article from {original_word_count} to {new_word_count} words!")
+                return expanded_article
+            else:
+                # Still short? Add more with even stricter instructions
+                still_needed = min_words - new_word_count + 50
+                st.info(f"Still need {still_needed} more words. Adding more content...")
+                
+                more_content_prompt = f'''
+Write exactly {still_needed} words about: "{title}"
+
+Create natural paragraphs with concrete examples and analysis.
+
+DO NOT write any introductory text, labels, or descriptions.
+DO NOT say what section this is for.
+Just write {still_needed} words of content:'''
+                
+                more_content = call_claude(more_content_prompt, max_tokens=2000, retry_count=3)
+                
+                if more_content:
+                    # Clean again
+                    clean_more = []
+                    for line in more_content.split('\n'):
+                        if not any(phrase in line.lower() for phrase in [
+                            'additional', 'here', 'paragraph', 'section', 'adding',
+                            'to expand', 'furthermore to', 'building on'
+                        ]):
+                            clean_more.append(line)
+                    
+                    more_content = '\n'.join(clean_more).strip()
+                    
+                    final_article = expanded_article + "\n\n" + more_content
+                    final_count = len(final_article.split())
+                    
+                    if final_count >= min_words:
+                        st.success(f"Final expansion successful: {final_count} words!")
+                        return final_article
+                    else:
+                        st.error(f"Could not reach minimum. Final: {final_count} words (need {min_words})")
+                        st.info("Use revision feature to request: 'Add 200-300 more words with additional examples and analysis'")
+                        return final_article
+                        
     except Exception as e:
-        st.error(f"Error calling Claude API: {str(e)}")
-        return None
+        st.error(f"Expansion error: {str(e)}")
+    
+    return article
+
+# -------------- CLEAN ARTICLE DISPLAY ----------------
+def clean_article_for_display(article):
+    """Remove any meta-text from article before displaying"""
+    clean_lines = []
+    skip_next = False
+    
+    for line in article.split('\n'):
+        # Skip meta-commentary lines
+        if any(x in line.lower() for x in [
+            'word count:', 'total words:', '[total word', 
+            'additional words', '---expanded', 'here\'s an additional',
+            'to expand the article', 'words to expand'
+        ]):
+            skip_next = True
+            continue
+        
+        # Skip separator lines
+        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
+            continue
+            
+        # Skip line after meta-commentary
+        if skip_next and line.strip() == '':
+            skip_next = False
+            continue
+            
+        skip_next = False
+        clean_lines.append(line)
+    
+    return '\n'.join(clean_lines).strip()
 
 # -------------- ARTICLE REVISION ----------------
 def revise_article(original_article, revision_request, language="UK"):
+    """Revise article with word count preservation"""
     language_instruction = "UK English" if language == "UK" else "US English"
     
+    clean_article = clean_article_for_display(original_article)
+    current_words = len(clean_article.split())
+    
     prompt = f'''
-Please revise the following blog article based on the specific request below.
+Revise this {current_words}-word blog article based on the request below.
 
-ORIGINAL ARTICLE:
-{original_article}
+ARTICLE:
+{clean_article}
 
 REVISION REQUEST:
 {revision_request}
 
-IMPORTANT GUIDELINES:
-- Maintain the same {language_instruction} and style as the original
-- Only make the requested changes
-- Keep all other content intact unless the revision specifically requires broader changes
-- Ensure the article remains coherent after revisions
-- Do not add a conclusion section - maintain the forward-looking final section
-- MAINTAIN THE WORD COUNT - do not significantly reduce the article length
+IMPORTANT:
+- Maintain {language_instruction}
+- Keep approximately {current_words} words (don't reduce word count)
+- Make only the requested changes
+- If the request asks for expansion, add the requested content
 
-Please provide the revised article with the requested changes implemented.
-'''
+Provide the complete revised article:'''
     
-    return call_claude(prompt)
+    return call_claude(prompt, retry_count=3)
 
 # -------------- CONVERT MARKDOWN TO DOCX - SIMPLIFIED ----------------
 def markdown_to_docx(content, title):
@@ -738,6 +812,9 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     
     # Create UK version
     if article_uk:
+        # Clean article before export
+        article_uk = clean_article_for_display(article_uk)
+        
         # Extract generated title if present
         if "TITLE:" in article_uk:
             title_line = article_uk.split('\n')[0]
@@ -759,6 +836,9 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     
     # Create US version
     if article_us:
+        # Clean article before export
+        article_us = clean_article_for_display(article_us)
+        
         # Extract generated title if present
         if "TITLE:" in article_us:
             title_line = article_us.split('\n')[0]
@@ -811,6 +891,14 @@ if submitted and blog_title:
         
         articles = {}
         
+        # Debug: Show what word count is being sent
+        try:
+            min_words_debug, max_words_debug = map(int, word_count_range.split('-'))
+        except:
+            min_words_debug, max_words_debug = 750, 1500
+        
+        st.info(f"📊 Target: {max_words_debug} words (minimum {min_words_debug})")
+        
         # Generate UK version
         if generate_uk:
             with st.spinner("Generating UK English version..."):
@@ -819,8 +907,20 @@ if submitted and blog_title:
                     client_cfg, extra_keywords, document_content, "UK", word_count_range, 
                     include_hiring_section, generate_title=False
                 )
+                
+                # Debug: Show part of the prompt to verify word count instructions
+                if show_prompt_debug:
+                    with st.expander("UK Prompt Debug Info", expanded=True):
+                        st.text_area("First 1000 chars of UK prompt:", full_prompt[:1000], height=200)
+                        st.info(f"Full prompt length: {len(full_prompt)} characters")
+                
                 article_uk = call_claude(full_prompt)
                 if article_uk:
+                    # Ensure word count is met - passing title now
+                    article_uk = ensure_word_count(article_uk, min_words_debug, max_words_debug, "UK", 
+                                                  title=blog_title, facts=pasted_facts, quotes=pasted_quotes,
+                                                  keywords=all_keywords, ai_friendly=ai_friendly,
+                                                  include_hiring_impact=include_hiring_section)
                     articles['UK'] = article_uk
         
         # Generate US version
@@ -831,8 +931,20 @@ if submitted and blog_title:
                     client_cfg, extra_keywords, document_content, "US", word_count_range, 
                     include_hiring_section, generate_title=False
                 )
+                
+                # Debug: Show part of the prompt to verify word count instructions
+                if show_prompt_debug:
+                    with st.expander("US Prompt Debug Info", expanded=True):
+                        st.text_area("First 1000 chars of US prompt:", full_prompt[:1000], height=200)
+                        st.info(f"Full prompt length: {len(full_prompt)} characters")
+                
                 article_us = call_claude(full_prompt)
                 if article_us:
+                    # Ensure word count is met - passing title now
+                    article_us = ensure_word_count(article_us, min_words_debug, max_words_debug, "US",
+                                                  title=blog_title, facts=pasted_facts, quotes=pasted_quotes,
+                                                  keywords=all_keywords, ai_friendly=ai_friendly,
+                                                  include_hiring_impact=include_hiring_section)
                     articles['US'] = article_us
         
         if articles:
@@ -844,7 +956,7 @@ if submitted and blog_title:
             
             # Update stats
             st.session_state.generation_stats['total_blogs'] += len(articles)
-            total_words = sum(len(article.split()) for article in articles.values())
+            total_words = sum(len(clean_article_for_display(article).split()) for article in articles.values())
             st.session_state.generation_stats['total_words'] += total_words
             
             # Save to history
@@ -947,10 +1059,8 @@ if st.session_state.current_articles:
         tab1, tab2 = st.tabs(["UK English", "US English"])
         
         with tab1:
-            # Clean article for display (remove TITLE: line if present)
-            article_uk_display = articles['UK']
-            if "TITLE:" in article_uk_display:
-                article_uk_display = '\n'.join(article_uk_display.split('\n')[1:])
+            # Clean article for display
+            article_uk_display = clean_article_for_display(articles['UK'])
             
             if show_word_count:
                 st.info(f"Word Count: {len(article_uk_display.split())} words")
@@ -959,10 +1069,8 @@ if st.session_state.current_articles:
             st.markdown(article_uk_display)
         
         with tab2:
-            # Clean article for display (remove TITLE: line if present)
-            article_us_display = articles['US']
-            if "TITLE:" in article_us_display:
-                article_us_display = '\n'.join(article_us_display.split('\n')[1:])
+            # Clean article for display
+            article_us_display = clean_article_for_display(articles['US'])
             
             if show_word_count:
                 st.info(f"Word Count: {len(article_us_display.split())} words")
@@ -972,9 +1080,7 @@ if st.session_state.current_articles:
     
     elif 'UK' in articles:
         # Clean article for display
-        article_uk_display = articles['UK']
-        if "TITLE:" in article_uk_display:
-            article_uk_display = '\n'.join(article_uk_display.split('\n')[1:])
+        article_uk_display = clean_article_for_display(articles['UK'])
         
         if show_word_count:
             st.info(f"Word Count: {len(article_uk_display.split())} words")
@@ -984,9 +1090,7 @@ if st.session_state.current_articles:
     
     else:
         # Clean article for display
-        article_us_display = articles['US']
-        if "TITLE:" in article_us_display:
-            article_us_display = '\n'.join(article_us_display.split('\n')[1:])
+        article_us_display = clean_article_for_display(articles['US'])
         
         if show_word_count:
             st.info(f"Word Count: {len(article_us_display.split())} words")
