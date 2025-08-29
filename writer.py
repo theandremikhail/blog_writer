@@ -3,6 +3,8 @@ import yaml
 import anthropic
 import datetime
 from docx import Document
+from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 import os
 import fitz  # PyMuPDF for PDF parsing
 import pandas as pd
@@ -11,6 +13,8 @@ from pathlib import Path
 import json
 import re
 import time
+from PIL import Image
+import base64
 
 # -------------- CONFIG ----------------
 ANTHROPIC_KEY = st.secrets["api_keys"]["anthropic_api_key"]
@@ -101,6 +105,186 @@ def process_uploaded_file(uploaded_file):
         st.error(f"Error processing file: {str(e)}")
         return ""
 
+# -------------- LOGO PROCESSING ----------------
+def process_logo(uploaded_logo):
+    """Process uploaded logo for display and storage"""
+    if uploaded_logo is None:
+        return None
+    
+    try:
+        # Open and process the image
+        img = Image.open(uploaded_logo)
+        
+        # Convert to RGB if necessary
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Resize if too large (maintain aspect ratio)
+        max_width = 300
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_height = int(img.height * ratio)
+            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+        
+        # Save to bytes
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        
+        return img_bytes
+    except Exception as e:
+        st.error(f"Error processing logo: {str(e)}")
+        return None
+
+# -------------- TITLE GENERATION ----------------
+def generate_title_only(topic, client_cfg, custom_keywords=""):
+    """Generate only a title for the given topic"""
+    base_keywords = client_cfg.get("keywords", [])
+    if custom_keywords:
+        additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
+        for kw in additional_keywords:
+            if kw.lower() not in [k.lower() for k in base_keywords]:
+                base_keywords.append(kw)
+    keywords = ", ".join(base_keywords)
+    
+    # Add variation to avoid repetition
+    variation = st.session_state.get('title_generation_count', 0) % 3
+    style_hints = [
+        "Make it compelling and action-oriented",
+        "Focus on the value and benefits",
+        "Make it intriguing and thought-provoking"
+    ]
+    
+    prompt = f'''
+Generate ONLY a compelling, SEO-friendly blog title for this topic: "{topic}"
+
+Requirements:
+- Professional and engaging
+- Incorporate relevant keywords naturally
+- Clear and specific
+- 8-15 words long
+- Should work for a recruitment/HR industry blog
+- Keywords to consider: {keywords}
+- Style: {style_hints[variation]}
+
+Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, just the title text.
+'''
+    
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=100,
+            temperature=0.9,  # Higher temperature for more variation
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        st.error(f"Error generating title: {str(e)}")
+        return None
+
+# -------------- CLAUDE PROMPT HELPER - MODIFIED FOR NO "INTRODUCTION" ----------------
+def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500", include_hiring_impact=False, generate_title=False):
+    base_keywords = client_cfg.get("keywords", [])
+    if custom_keywords:
+        additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
+        base_keywords_lower = [kw.lower() for kw in base_keywords]
+        for kw in additional_keywords:
+            if kw not in base_keywords_lower:
+                base_keywords.append(kw)
+    keywords = ", ".join(base_keywords)
+    
+    language_instruction = "UK English" if language == "UK" else "US English"
+    spelling_note = "(use British spelling, 's' instead of 'z' in words like 'organisation')" if language == "UK" else "(use American spelling, 'z' instead of 's' in words like 'organization')"
+    
+    # Parse word range and OVERSHOOT to compensate
+    try:
+        min_words, max_words = map(int, word_range.split('-'))
+    except:
+        min_words, max_words = 750, 1500
+    
+    # OVERSHOOT the target to ensure we hit minimum
+    target_words = max_words  # Just aim for maximum
+    
+    hiring_impact_section = ""
+    if include_hiring_impact:
+        hiring_impact_section = """
+- **The Impact on Hiring**: 
+
+Detailed section on how this affects recruitment, talent acquisition, hiring managers, employer branding, and recruitment strategies
+"""
+    
+    # Updated prompt without "Introduction"
+    prompt = f'''
+Write a comprehensive {target_words}-word blog article in {language_instruction} {spelling_note} about: "{title}"
+
+IMPORTANT: Write EXACTLY {target_words} words. This is a hard requirement.
+
+Include these sections:
+- **[Opening/Lead Section - use a descriptive title, NOT "Introduction"]**:
+
+Comprehensive overview with context and preview of main points and can be more than one paragraph. Name this section something relevant to the topic, not "Introduction"
+
+- **[Main Section 1]**: 
+
+Deep dive into first key aspect with examples and analysis and can be more than one paragraph
+
+- **[Main Section 2]**: 
+
+Exploration of second aspect with case studies and data and can be more than one paragraph
+
+- **[Main Section 3]**: 
+
+Discussion of challenges, opportunities, and solutions
+{hiring_impact_section if include_hiring_impact else ""}
+- **[Forward-Looking Section]**:
+
+Future outlook and actionable takeaways (NOT a conclusion)
+
+Requirements:
+- DO NOT use the word "Introduction" as a heading
+- Start with an engaging, topic-specific heading for the opening section
+- Write detailed, expansive paragraphs (100-150 words each)
+- Include specific examples, statistics, and expert insights throughout
+- Use transitions and elaborate on every point
+- Add single line after headings
+- Format headings with ** for bold (e.g., **Understanding the Digital Transformation**)
+- Incorporate these keywords naturally: {keywords}
+{f"- Include these facts: {facts}" if facts else ""}
+{f"- Include these quotes: {quotes}" if quotes else ""}
+{f"- Reference this material: {document_content[:500]}" if document_content else ""}
+
+Write the full {target_words}-word article now:'''
+    
+    return prompt, base_keywords
+
+# -------------- ARTICLE GENERATION WITH RETRY LOGIC ----------------
+def call_claude(prompt, max_tokens=8000, retry_count=3):
+    """Call Claude with retry logic for 529 errors"""
+    for attempt in range(retry_count):
+        try:
+            response = anthropic_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=max_tokens,
+                temperature=0.7,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.content[0].text
+        except Exception as e:
+            error_message = str(e)
+            if "529" in error_message or "overloaded" in error_message.lower():
+                if attempt < retry_count - 1:
+                    wait_time = (2 ** attempt) * 5  # 5, 10, 20 seconds
+                    st.warning(f"API overloaded. Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    st.error("API is overloaded. Please try again in a few minutes.")
+                    return None
+            else:
+                st.error(f"Error calling Claude API: {error_message}")
+                return None
+    return None
+
 # -------------- STREAMLIT UI ----------------
 st.set_page_config(
     page_title="AIvan, The Marketing Junction", 
@@ -117,6 +301,10 @@ if 'editing_mode' not in st.session_state:
     st.session_state.editing_mode = False
 if 'use_generated_title' not in st.session_state:
     st.session_state.use_generated_title = False
+if 'generated_title' not in st.session_state:
+    st.session_state.generated_title = ""
+if 'title_generation_count' not in st.session_state:
+    st.session_state.title_generation_count = 0
 
 # Professional CSS styling
 st.markdown("""
@@ -238,6 +426,14 @@ st.markdown("""
         border: 1px solid #ffeaa7;
         margin: 1.5rem 0;
     }
+    
+    .generated-title-box {
+        background: #e3f2fd;
+        padding: 1rem;
+        border-radius: 6px;
+        border: 1px solid #90caf9;
+        margin: 0.5rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -259,6 +455,20 @@ with st.sidebar:
         ["marketing_junction"],
         help="Select the client configuration profile"
     )
+    
+    # Logo upload (optional feature)
+    st.markdown("### Company Logo (Optional)")
+    uploaded_logo = st.file_uploader(
+        "Upload Logo",
+        type=['png', 'jpg', 'jpeg'],
+        help="Upload your company logo to include in exports"
+    )
+    
+    if uploaded_logo:
+        logo_bytes = process_logo(uploaded_logo)
+        if logo_bytes:
+            st.image(logo_bytes, width=150)
+            st.session_state.logo_bytes = logo_bytes
     
     # Language versions
     st.markdown("### Language Versions")
@@ -295,8 +505,6 @@ with st.sidebar:
         help="Add a dedicated section discussing how this topic affects recruitment and talent acquisition"
     )
     
-
-    
     # Export options
     st.markdown("### Export Options")
     export_format = st.selectbox(
@@ -323,21 +531,71 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.markdown('<div class="section-header"><h3>Blog Content Setup</h3></div>', unsafe_allow_html=True)
     
-    with st.form("blog_form"):
-        # Blog title with generate option
-        title_col1, title_col2 = st.columns([3, 1])
-        
-        with title_col1:
+    # Title section with AI generation
+    st.markdown("### Blog Title")
+    
+    # Title input and generation controls in same row
+    title_col1, title_col2, title_col3 = st.columns([4, 1.5, 0.8])
+    
+    with title_col1:
+        if st.session_state.use_generated_title and st.session_state.generated_title:
+            blog_title = st.text_input(
+                "Blog Title/Topic",
+                value=st.session_state.generated_title,
+                placeholder="Enter your compelling blog topic here...",
+                help="This will be the main title of your blog post",
+                key="blog_title_input"
+            )
+        else:
             blog_title = st.text_input(
                 "Blog Title/Topic",
                 placeholder="Enter your compelling blog topic here...",
-                help="This will be the main title of your blog post"
+                help="This will be the main title of your blog post",
+                key="blog_title_input"
             )
-        
-        with title_col2:
-            st.markdown("<br>", unsafe_allow_html=True)  # Add spacing
-            generate_title_btn = st.form_submit_button("Generate Title", use_container_width=True)
-        
+    
+    with title_col2:
+        st.markdown("<div style='height: 29px'></div>", unsafe_allow_html=True)
+        if st.button("🤖 AI Title", key="generate_title_btn", use_container_width=True):
+            if blog_title or st.session_state.generated_title:
+                topic = blog_title if blog_title else st.session_state.generated_title
+                with st.spinner("Generating..."):
+                    client_cfg = load_client_config(client_name)
+                    suggested_title = generate_title_only(topic, client_cfg, extra_keywords)
+                    if suggested_title:
+                        st.session_state.generated_title = suggested_title
+                        st.session_state.title_generation_count += 1
+                        st.rerun()
+            else:
+                st.warning("Please enter a topic first")
+    
+    with title_col3:
+        st.markdown("<div style='height: 29px'></div>", unsafe_allow_html=True)
+        if st.button("🔄", key="refresh_title_btn", use_container_width=True, help="Generate another title"):
+            if st.session_state.generated_title or blog_title:
+                topic = blog_title if blog_title else st.session_state.generated_title
+                with st.spinner("Regenerating..."):
+                    client_cfg = load_client_config(client_name)
+                    suggested_title = generate_title_only(topic, client_cfg, extra_keywords)
+                    if suggested_title:
+                        st.session_state.generated_title = suggested_title
+                        st.session_state.title_generation_count += 1
+                        st.rerun()
+    
+    # Show generated title and checkbox to use it
+    if st.session_state.generated_title:
+        st.markdown('<div class="generated-title-box">', unsafe_allow_html=True)
+        col_a, col_b = st.columns([4, 1])
+        with col_a:
+            st.markdown(f"**Generated Title:** {st.session_state.generated_title}")
+        with col_b:
+            use_title = st.checkbox("Use this title", key="use_gen_title", value=st.session_state.use_generated_title)
+            if use_title != st.session_state.use_generated_title:
+                st.session_state.use_generated_title = use_title
+                st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with st.form("blog_form"):
         # Content inputs
         st.markdown("### Content Inputs")
         
@@ -408,141 +666,7 @@ with col2:
         st.metric("Avg Words/Blog", 
                  st.session_state.generation_stats['total_words'] // max(1, st.session_state.generation_stats['total_blogs']))
 
-# -------------- TITLE GENERATION ----------------
-def generate_title_only(topic, client_cfg, custom_keywords=""):
-    """Generate only a title for the given topic"""
-    base_keywords = client_cfg.get("keywords", [])
-    if custom_keywords:
-        additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
-        for kw in additional_keywords:
-            if kw.lower() not in [k.lower() for k in base_keywords]:
-                base_keywords.append(kw)
-    keywords = ", ".join(base_keywords)
-    
-    prompt = f'''
-Generate ONLY a compelling, SEO-friendly blog title for this topic: "{topic}"
-
-Requirements:
-- Professional and engaging
-- Incorporate relevant keywords naturally
-- Clear and specific
-- 8-15 words long
-- Should work for a recruitment/HR industry blog
-- Keywords to consider: {keywords}
-
-Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, just the title text.
-'''
-    
-    try:
-        response = anthropic_client.messages.create(
-            model="claude-opus-4-1-20250805",
-            max_tokens=100,
-            temperature=0.8,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text.strip()
-    except Exception as e:
-        st.error(f"Error generating title: {str(e)}")
-        return None
-
-# -------------- CLAUDE PROMPT HELPER - SIMPLIFIED AND DIRECT ----------------
-def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500", include_hiring_impact=False, generate_title=False):
-    base_keywords = client_cfg.get("keywords", [])
-    if custom_keywords:
-        additional_keywords = [kw.strip().lower() for kw in custom_keywords.split(",") if kw.strip()]
-        base_keywords_lower = [kw.lower() for kw in base_keywords]
-        for kw in additional_keywords:
-            if kw not in base_keywords_lower:
-                base_keywords.append(kw)
-    keywords = ", ".join(base_keywords)
-    
-    language_instruction = "UK English" if language == "UK" else "US English"
-    spelling_note = "(use British spelling, 's' instead of 'z' in words like 'organisation')" if language == "UK" else "(use American spelling, 'z' instead of 's' in words like 'organization')"
-    
-    # Parse word range and OVERSHOOT to compensate
-    try:
-        min_words, max_words = map(int, word_range.split('-'))
-    except:
-        min_words, max_words = 750, 1500
-    
-    # OVERSHOOT the target to ensure we hit minimum
-    target_words = max_words  # Just aim for maximum
-    
-    hiring_impact_section = ""
-    if include_hiring_impact:
-        hiring_impact_section = """
-- **The Impact on Hiring**: 
-
-Detailed section on how this affects recruitment, talent acquisition, hiring managers, employer branding, and recruitment strategies
-"""
-    
-    # Simpler, clearer prompt
-    prompt = f'''
-Write a comprehensive {target_words}-word blog article in {language_instruction} {spelling_note} about: "{title}"
-
-IMPORTANT: Write EXACTLY {target_words} words. This is a hard requirement.
-
-Include these sections:
-- **Introduction**:
-
-Comprehensive overview with context and preview of main points and can be more than one paragraph
-- **[Main Section 1]**: 
-
-Deep dive into first key aspect with examples and analysis and can be more than one paragraph
-- **[Main Section 2]**: 
-
-Exploration of second aspect with case studies and data and can be more than one paragraph
-- **[Main Section 3]**: 
-
-Discussion of challenges, opportunities, and solutions
-{hiring_impact_section if include_hiring_impact else ""}
-- **[Forward-Looking Section]**:
-
-Future outlook and actionable takeaways (NOT a conclusion)
-
-Requirements:
-- Write detailed, expansive paragraphs (100-150 words each)
-- Include specific examples, statistics, and expert insights throughout
-- Use transitions and elaborate on every point
-- Add single line after headings
-- Incorporate these keywords naturally: {keywords}
-{f"- Include these facts: {facts}" if facts else ""}
-{f"- Include these quotes: {quotes}" if quotes else ""}
-{f"- Reference this material: {document_content[:500]}" if document_content else ""}
-
-Write the full {target_words}-word article now:'''
-    
-    return prompt, base_keywords
-
-# -------------- ARTICLE GENERATION WITH RETRY LOGIC ----------------
-def call_claude(prompt, max_tokens=8000, retry_count=3):
-    """Call Claude with retry logic for 529 errors"""
-    for attempt in range(retry_count):
-        try:
-            response = anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=max_tokens,
-                temperature=0.7,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return response.content[0].text
-        except Exception as e:
-            error_message = str(e)
-            if "529" in error_message or "overloaded" in error_message.lower():
-                if attempt < retry_count - 1:
-                    wait_time = (2 ** attempt) * 5  # 5, 10, 20 seconds
-                    st.warning(f"API overloaded. Waiting {wait_time} seconds before retry...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    st.error("API is overloaded. Please try again in a few minutes.")
-                    return None
-            else:
-                st.error(f"Error calling Claude API: {error_message}")
-                return None
-    return None
-
-# -------------- COMPLETELY REWRITTEN WORD COUNT ENFORCER ----------------
+# -------------- WORD COUNT ENFORCER ----------------
 def ensure_word_count(article, min_words, max_words, language="UK", title="", facts="", quotes="", keywords=[], ai_friendly=False, include_hiring_impact=False):
     """Completely new approach - never shrink, only expand"""
     if not article:
@@ -694,6 +818,33 @@ def clean_article_for_display(article):
     
     return '\n'.join(clean_lines).strip()
 
+# -------------- PROCESS BOLD TEXT ----------------
+def process_bold_text(paragraph, p):
+    """Process markdown bold text (**text**) in a paragraph for DOCX"""
+    import re
+    
+    # Find all bold sections
+    bold_pattern = r'\*\*([^*]+)\*\*'
+    
+    # Split the text by bold markers
+    parts = re.split(bold_pattern, paragraph)
+    
+    # Clear the paragraph first
+    p.clear()
+    
+    # Add parts with proper formatting
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Regular text
+            if part:
+                p.add_run(part)
+        else:
+            # Bold text
+            run = p.add_run(part)
+            run.bold = True
+    
+    return p
+
 # -------------- ARTICLE REVISION ----------------
 def revise_article(original_article, revision_request, language="UK"):
     """Revise article with word count preservation"""
@@ -716,14 +867,15 @@ IMPORTANT:
 - Keep approximately {current_words} words (don't reduce word count)
 - Make only the requested changes
 - If the request asks for expansion, add the requested content
+- Format headings with ** for bold (e.g., **Understanding the Digital Transformation**)
 
 Provide the complete revised article:'''
     
     return call_claude(prompt, retry_count=3)
 
-# -------------- CONVERT MARKDOWN TO DOCX - SIMPLIFIED ----------------
+# -------------- CONVERT MARKDOWN TO DOCX - IMPROVED WITH BOLD PROCESSING ----------------
 def markdown_to_docx(content, title):
-    """Convert markdown content to DOCX format - simplified without language markers"""
+    """Convert markdown content to DOCX format with proper bold text processing"""
     doc = Document()
     
     # Add title (without language marker)
@@ -743,48 +895,60 @@ def markdown_to_docx(content, title):
         if not line:
             # Empty line - add accumulated paragraph if any
             if current_paragraph:
-                doc.add_paragraph(' '.join(current_paragraph))
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
                 current_paragraph = []
             continue
         
         # Check for headings with bold markers
-        if line.startswith('**### ') and line.endswith('**'):
+        if line.startswith('**') and line.endswith('**') and not line[2:-2].strip().startswith('*'):
             if current_paragraph:
-                doc.add_paragraph(' '.join(current_paragraph))
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
                 current_paragraph = []
-            heading_text = line[6:-2]  # Remove **### and **
-            h = doc.add_heading(heading_text, level=3)
-            h.runs[0].bold = True
-        elif line.startswith('**## ') and line.endswith('**'):
-            if current_paragraph:
-                doc.add_paragraph(' '.join(current_paragraph))
-                current_paragraph = []
-            heading_text = line[5:-2]  # Remove **## and **
-            h = doc.add_heading(heading_text, level=2)
-            h.runs[0].bold = True
-        elif line.startswith('**# ') and line.endswith('**'):
-            if current_paragraph:
-                doc.add_paragraph(' '.join(current_paragraph))
-                current_paragraph = []
-            heading_text = line[4:-2]  # Remove **# and **
-            h = doc.add_heading(heading_text, level=1)
+            
+            # Extract heading text and level
+            heading_text = line.strip('*').strip()
+            
+            # Determine heading level based on markers
+            if heading_text.startswith('### '):
+                heading_text = heading_text[4:]
+                h = doc.add_heading(heading_text, level=3)
+            elif heading_text.startswith('## '):
+                heading_text = heading_text[3:]
+                h = doc.add_heading(heading_text, level=2)
+            elif heading_text.startswith('# '):
+                heading_text = heading_text[2:]
+                h = doc.add_heading(heading_text, level=1)
+            else:
+                # Default to level 2 for bold lines that look like headings
+                h = doc.add_heading(heading_text, level=2)
+            
             h.runs[0].bold = True
         # Also check for headings without bold markers (fallback)
         elif line.startswith('### '):
             if current_paragraph:
-                doc.add_paragraph(' '.join(current_paragraph))
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
                 current_paragraph = []
             h = doc.add_heading(line[4:], level=3)
             h.runs[0].bold = True
         elif line.startswith('## '):
             if current_paragraph:
-                doc.add_paragraph(' '.join(current_paragraph))
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
                 current_paragraph = []
             h = doc.add_heading(line[3:], level=2)
             h.runs[0].bold = True
         elif line.startswith('# '):
             if current_paragraph:
-                doc.add_paragraph(' '.join(current_paragraph))
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
                 current_paragraph = []
             h = doc.add_heading(line[2:], level=1)
             h.runs[0].bold = True
@@ -794,11 +958,13 @@ def markdown_to_docx(content, title):
     
     # Add any remaining paragraph
     if current_paragraph:
-        doc.add_paragraph(' '.join(current_paragraph))
+        p = doc.add_paragraph()
+        paragraph_text = ' '.join(current_paragraph)
+        process_bold_text(paragraph_text, p)
     
     return doc
 
-# -------------- EXPORT TO DOCX - SIMPLIFIED ----------------
+# -------------- EXPORT TO DOCX WITH LOGO ----------------
 def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
@@ -822,7 +988,29 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
                 actual_title = title_line.replace("TITLE:", "").strip()
                 article_uk = '\n'.join(article_uk.split('\n')[1:])  # Remove title line from content
         
-        doc_uk = markdown_to_docx(article_uk, actual_title)  # Use title without language marker
+        doc_uk = markdown_to_docx(article_uk, actual_title)
+        
+        # Add logo if available
+        if 'logo_bytes' in st.session_state:
+            # Add a paragraph for the logo at the beginning
+            first_paragraph = doc_uk.paragraphs[0]
+            logo_paragraph = first_paragraph.insert_paragraph_before()
+            logo_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+            
+            # Save logo temporarily and add to document
+            temp_logo_path = "temp_logo.png"
+            with open(temp_logo_path, 'wb') as f:
+                st.session_state.logo_bytes.seek(0)
+                f.write(st.session_state.logo_bytes.read())
+            
+            logo_run = logo_paragraph.add_run()
+            logo_run.add_picture(temp_logo_path, width=Pt(150))
+            
+            # Clean up temp file
+            os.remove(temp_logo_path)
+            
+            # Add some spacing after logo
+            doc_uk.add_paragraph("")
         
         # Add minimal metadata at the end
         doc_uk.add_paragraph("")
@@ -846,7 +1034,29 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
                 actual_title = title_line.replace("TITLE:", "").strip()
                 article_us = '\n'.join(article_us.split('\n')[1:])  # Remove title line from content
         
-        doc_us = markdown_to_docx(article_us, actual_title)  # Use title without language marker
+        doc_us = markdown_to_docx(article_us, actual_title)
+        
+        # Add logo if available
+        if 'logo_bytes' in st.session_state:
+            # Add a paragraph for the logo at the beginning
+            first_paragraph = doc_us.paragraphs[0]
+            logo_paragraph = first_paragraph.insert_paragraph_before()
+            logo_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+            
+            # Save logo temporarily and add to document
+            temp_logo_path = "temp_logo.png"
+            with open(temp_logo_path, 'wb') as f:
+                st.session_state.logo_bytes.seek(0)
+                f.write(st.session_state.logo_bytes.read())
+            
+            logo_run = logo_paragraph.add_run()
+            logo_run.add_picture(temp_logo_path, width=Pt(150))
+            
+            # Clean up temp file
+            os.remove(temp_logo_path)
+            
+            # Add some spacing after logo
+            doc_us.add_paragraph("")
         
         # Add minimal metadata at the end
         doc_us.add_paragraph("")
@@ -861,19 +1071,15 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     return filenames, actual_title
 
 # -------------- MAIN EXECUTION ----------------
-# Handle title generation separately
-if generate_title_btn and blog_title:
-    with st.spinner("Generating title suggestion..."):
-        client_cfg = load_client_config(client_name)
-        suggested_title = generate_title_only(blog_title, client_cfg, extra_keywords)
-        if suggested_title:
-            st.success(f"Suggested Title: **{suggested_title}**")
-            st.info("Copy the title above and paste it in the Blog Title field if you'd like to use it.")
-
-if submitted and blog_title:
+# Handle title generation and blog generation
+if submitted and (blog_title or (st.session_state.use_generated_title and st.session_state.generated_title)):
     if not (generate_uk or generate_us):
         st.error("Please select at least one language version to generate.")
     else:
+        # Use generated title if checkbox is checked
+        if st.session_state.use_generated_title and st.session_state.generated_title:
+            blog_title = st.session_state.generated_title
+        
         client_cfg = load_client_config(client_name)
         
         # Process uploaded file
@@ -1024,21 +1230,23 @@ if st.session_state.current_articles:
     
     with download_col1:
         if 'UK' in articles and 'UK' in filenames:
-            st.download_button(
-                "📥 Download UK Version",
-                data=open(filenames['UK'], "rb").read(),
-                file_name=os.path.basename(filenames['UK']),
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
+            with open(filenames['UK'], "rb") as file:
+                st.download_button(
+                    "📥 Download UK Version",
+                    data=file.read(),
+                    file_name=os.path.basename(filenames['UK']),
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
     
     with download_col2:
         if 'US' in articles and 'US' in filenames:
-            st.download_button(
-                "📥 Download US Version",
-                data=open(filenames['US'], "rb").read(),
-                file_name=os.path.basename(filenames['US']),
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
+            with open(filenames['US'], "rb") as file:
+                st.download_button(
+                    "📥 Download US Version",
+                    data=file.read(),
+                    file_name=os.path.basename(filenames['US']),
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
     
     # Preview sections
     st.markdown("---")
