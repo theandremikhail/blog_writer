@@ -183,6 +183,7 @@ Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, j
         return None
 
 # -------------- CLAUDE PROMPT HELPER - MODIFIED FOR NO "INTRODUCTION" ----------------
+# -------------- CLAUDE PROMPT HELPER - MODIFIED FOR NO "INTRODUCTION" ----------------
 def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500", include_hiring_impact=False, generate_title=False):
     base_keywords = client_cfg.get("keywords", [])
     if custom_keywords:
@@ -213,8 +214,57 @@ def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords=""
 Detailed section on how this affects recruitment, talent acquisition, hiring managers, employer branding, and recruitment strategies
 """
     
-    # Updated prompt without "Introduction"
-    prompt = f'''
+    # AI-FRIENDLY VERSION
+    if ai_opt:
+        prompt = f'''
+Write a comprehensive {target_words}-word blog article in {language_instruction} {spelling_note} about: "{title}"
+
+IMPORTANT: Write EXACTLY {target_words} words. This is a hard requirement.
+
+FORMAT FOR AI-FRIENDLY/AEO OPTIMIZED CONTENT:
+
+Structure Requirements:
+- Use question headings (H2) formatted as **What is X?** or **How do I do Y?**
+- Answer each question immediately with 1-2 clear sentences right after the heading
+- Start major sections with **Key takeaway:** in bold
+- Include one numbered step-by-step process somewhere in the article
+- End with a FAQ section containing exactly 5 Q&A pairs
+- Include a TL;DR summary at the very end
+
+Content Must Include:
+- 2-3 specific examples with real numbers/results (use actual industry data, not fictional)
+- At least one "how-to" section with clear numbered steps
+- Actionable tips readers can implement immediately
+- Short paragraphs (2-3 sentences maximum)
+- Use bullet points where helpful for scannability
+
+Writing Style:
+- Conversational and easy to scan
+- No jargon - explain complex terms simply
+- Question-based headings throughout
+- Direct answers immediately following questions
+- Clear, practical, and actionable
+
+Required Sections (use these as question-based headings):
+1. **What is [topic]?** - Clear definition with immediate answer
+2. **Why does [topic] matter?** - Key benefits with **Key takeaway:** statement
+3. **How do you implement [topic]?** - Step-by-step numbered process
+4. **What are the best practices for [topic]?** - Bullet points with actionable tips
+5. **What challenges might you face?** - Common issues and solutions
+{hiring_impact_section if include_hiring_impact and "**How does this impact hiring?**" or "" else ""}
+6. **Frequently Asked Questions** - Exactly 5 Q&A pairs
+7. **TL;DR Summary** - 3-4 bullet points summarizing key points
+
+Keywords to incorporate naturally: {keywords}
+{f"Include these facts: {facts}" if facts else ""}
+{f"Include these quotes: {quotes}" if quotes else ""}
+{f"Reference this material: {document_content[:500]}" if document_content else ""}
+
+Remember: Use real examples and data only. Keep paragraphs short. Make it scannable.'''
+    
+    # STANDARD VERSION (existing code)
+    else:
+        prompt = f'''
 Write a comprehensive {target_words}-word blog article in {language_instruction} {spelling_note} about: "{title}"
 
 IMPORTANT: Write EXACTLY {target_words} words. This is a hard requirement.
@@ -256,6 +306,7 @@ Requirements:
 Write the full {target_words}-word article now:'''
     
     return prompt, base_keywords
+
 
 # -------------- ARTICLE GENERATION WITH RETRY LOGIC ----------------
 def call_claude(prompt, max_tokens=8000, retry_count=3):
@@ -846,12 +897,22 @@ def process_bold_text(paragraph, p):
     return p
 
 # -------------- ARTICLE REVISION ----------------
-def revise_article(original_article, revision_request, language="UK"):
+# -------------- ARTICLE REVISION ----------------
+def revise_article(original_article, revision_request, language="UK", ai_friendly=False):
     """Revise article with word count preservation"""
     language_instruction = "UK English" if language == "UK" else "US English"
     
     clean_article = clean_article_for_display(original_article)
     current_words = len(clean_article.split())
+    
+    ai_format_note = ""
+    if ai_friendly:
+        ai_format_note = """
+- Maintain AI-friendly format with question-based headings
+- Keep paragraphs short (2-3 sentences max)
+- Preserve the FAQ section and TL;DR summary
+- Maintain conversational, scannable style
+"""
     
     prompt = f'''
 Revise this {current_words}-word blog article based on the request below.
@@ -868,11 +929,11 @@ IMPORTANT:
 - Make only the requested changes
 - If the request asks for expansion, add the requested content
 - Format headings with ** for bold (e.g., **Understanding the Digital Transformation**)
+{ai_format_note}
 
 Provide the complete revised article:'''
     
     return call_claude(prompt, retry_count=3)
-
 # -------------- CONVERT MARKDOWN TO DOCX - IMPROVED WITH BOLD PROCESSING ----------------
 def markdown_to_docx(content, title):
     """Convert markdown content to DOCX format with proper bold text processing"""
@@ -1193,12 +1254,13 @@ if st.session_state.current_articles:
             help="Describe specific changes you'd like to make to the article"
         )
         
+        # In the revision section where buttons are handled:
         if revision_request:
             col1, col2 = st.columns(2)
             with col1:
                 if 'UK' in articles and st.button("Revise UK Version", type="secondary"):
                     with st.spinner("Revising UK version..."):
-                        revised_uk = revise_article(articles['UK'], revision_request, "UK")
+                        revised_uk = revise_article(articles['UK'], revision_request, "UK", ai_friendly)  # Pass ai_friendly
                         if revised_uk:
                             st.session_state.current_articles['UK'] = revised_uk
                             st.success("UK version revised!")
@@ -1207,7 +1269,7 @@ if st.session_state.current_articles:
             with col2:
                 if 'US' in articles and st.button("Revise US Version", type="secondary"):
                     with st.spinner("Revising US version..."):
-                        revised_us = revise_article(articles['US'], revision_request, "US")
+                        revised_us = revise_article(articles['US'], revision_request, "US", ai_friendly)  # Pass ai_friendly
                         if revised_us:
                             st.session_state.current_articles['US'] = revised_us
                             st.success("US version revised!")
