@@ -15,6 +15,103 @@ import re
 import time
 from PIL import Image
 import base64
+import hashlib
+
+# -------------- PASSWORD PROTECTION ----------------
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if 'password' in st.secrets and st.session_state["password"] == st.secrets["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    # First run or password not correct
+    if "password_correct" not in st.session_state:
+        # Show login form
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); 
+                    padding: 3rem; border-radius: 10px; text-align: center; 
+                    margin: 2rem auto; max-width: 500px;">
+            <h1 style="color: white; margin-bottom: 0.5rem;">AIvan Login</h1>
+            <p style="color: rgba(255,255,255,0.8); font-size: 1.1rem;">
+                The Marketing Junction's AI Blog Writer
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.text_input(
+                "Password", 
+                type="password", 
+                on_change=password_entered, 
+                key="password",
+                placeholder="Enter your password"
+            )
+            st.markdown("""
+            <style>
+                .stTextInput > div > div > input {
+                    text-align: center;
+                }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            if st.button("Login", use_container_width=True):
+                password_entered()
+        
+        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+            st.error("😕 Password incorrect. Please try again.")
+        
+        return False
+    
+    # Password correct
+    elif not st.session_state["password_correct"]:
+        # Show login form again
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); 
+                    padding: 3rem; border-radius: 10px; text-align: center; 
+                    margin: 2rem auto; max-width: 500px;">
+            <h1 style="color: white; margin-bottom: 0.5rem;">AIvan Login</h1>
+            <p style="color: rgba(255,255,255,0.8); font-size: 1.1rem;">
+                The Marketing Junction's AI Blog Writer
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.text_input(
+                "Password", 
+                type="password", 
+                on_change=password_entered, 
+                key="password",
+                placeholder="Enter your password"
+            )
+            if st.button("Login", use_container_width=True):
+                password_entered()
+        
+        st.error("😕 Password incorrect. Please try again.")
+        return False
+    
+    else:
+        # Password correct
+        return True
+
+# -------------- MAIN APP STARTS HERE ----------------
+# Set page config first (must be the first Streamlit command)
+st.set_page_config(
+    page_title="AIvan, The Marketing Junction", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Check password before showing the main app
+if not check_password():
+    st.stop()  # Stop execution here if password is incorrect
 
 # -------------- CONFIG ----------------
 ANTHROPIC_KEY = st.secrets["api_keys"]["anthropic_api_key"]
@@ -182,8 +279,7 @@ Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, j
         st.error(f"Error generating title: {str(e)}")
         return None
 
-# -------------- CLAUDE PROMPT HELPER - MODIFIED FOR NO "INTRODUCTION" ----------------
-# -------------- CLAUDE PROMPT HELPER - MODIFIED FOR NO "INTRODUCTION" ----------------
+# -------------- CLAUDE PROMPT HELPER ----------------
 def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords="", document_content="", language="UK", word_range="750-1500", include_hiring_impact=False, generate_title=False):
     base_keywords = client_cfg.get("keywords", [])
     if custom_keywords:
@@ -262,7 +358,7 @@ Keywords to incorporate naturally: {keywords}
 
 Remember: Use real examples and data only. Keep paragraphs short. Make it scannable.'''
     
-    # STANDARD VERSION (existing code)
+    # STANDARD VERSION
     else:
         prompt = f'''
 Write a comprehensive {target_words}-word blog article in {language_instruction} {spelling_note} about: "{title}"
@@ -307,7 +403,6 @@ Write the full {target_words}-word article now:'''
     
     return prompt, base_keywords
 
-
 # -------------- ARTICLE GENERATION WITH RETRY LOGIC ----------------
 def call_claude(prompt, max_tokens=8000, retry_count=3):
     """Call Claude with retry logic for 529 errors"""
@@ -336,12 +431,524 @@ def call_claude(prompt, max_tokens=8000, retry_count=3):
                 return None
     return None
 
-# -------------- STREAMLIT UI ----------------
-st.set_page_config(
-    page_title="AIvan, The Marketing Junction", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# -------------- ARTICLE REVISION WITH FIXED COMPLETE OUTPUT ----------------
+def revise_article(original_article, revision_request, language="UK", ai_friendly=False):
+    """Revise article with color-coded output - blue for revised, black for retained"""
+    language_instruction = "UK English" if language == "UK" else "US English"
+    
+    # Clean the article first
+    clean_article = clean_article_for_display(original_article)
+    current_words = len(clean_article.split())
+    
+    ai_format_note = ""
+    if ai_friendly:
+        ai_format_note = """
+- Maintain AI-friendly format with question-based headings
+- Keep paragraphs short (2-3 sentences max)
+- Preserve the FAQ section and TL;DR summary
+- Maintain conversational, scannable style
+"""
+    
+    # More explicit prompt to ensure complete output
+    prompt = f'''
+I need you to revise a blog article. You MUST output the ENTIRE revised article, not just parts of it.
+
+CURRENT ARTICLE ({current_words} words):
+=========================================
+{clean_article}
+=========================================
+
+REVISION REQUEST: {revision_request}
+
+CRITICAL INSTRUCTIONS - READ CAREFULLY:
+
+1. OUTPUT THE COMPLETE ARTICLE - Every single paragraph, every single section, from beginning to end
+2. DO NOT use phrases like "[rest remains unchanged]" or "[continue with original]" or any similar shortcuts
+3. DO NOT provide meta-commentary about what you changed
+4. DO NOT truncate or abbreviate ANY part of the article
+
+5. For CHANGED content: Wrap it with [REVISED] and [/REVISED] tags
+6. For UNCHANGED content: Include it exactly as it was, without any tags
+
+7. The output must be AT LEAST {current_words} words (can be up to {current_words + 100} words)
+8. If revisions make it shorter, expand other sections to maintain word count
+9. Maintain {language_instruction}
+10. Keep all formatting with ** for bold headings
+{ai_format_note}
+
+EXAMPLE OF CORRECT OUTPUT:
+**First Heading**
+This paragraph stays the same from original.
+
+[REVISED]This paragraph has been changed based on the revision request.[/REVISED]
+
+**Second Heading**
+Another unchanged paragraph here.
+
+[REVISED]Another changed paragraph here with the requested modifications.[/REVISED]
+
+This paragraph also unchanged.
+
+NOW PROVIDE THE COMPLETE REVISED ARTICLE:
+Every paragraph, every section, everything - with [REVISED] tags only around changed parts:'''
+    
+    revised_content = call_claude(prompt, max_tokens=8000, retry_count=3)
+    
+    if revised_content:
+        # Check if the response seems truncated or incomplete
+        if any(phrase in revised_content.lower() for phrase in [
+            "rest remains", "continue with", "remaining sections", 
+            "rest of the article", "continues unchanged", "[remaining",
+            "would continue"
+        ]):
+            # Try again with even more forceful prompt
+            prompt2 = f'''
+The previous response was incomplete. I need the COMPLETE article.
+
+Starting from this article:
+{clean_article}
+
+Apply this revision: {revision_request}
+
+OUTPUT RULES:
+- Write out EVERY SINGLE WORD of the complete article
+- Use [REVISED][/REVISED] tags ONLY around changed parts
+- Include EVERYTHING - no shortcuts, no summaries, no "rest continues" phrases
+- Minimum {current_words} words
+
+Output the FULL article now:'''
+            
+            revised_content = call_claude(prompt2, max_tokens=8000, retry_count=3)
+        
+        # Process the content to add HTML color tags
+        processed_content = process_revision_colors(revised_content)
+        return processed_content
+    
+    return None
+
+def process_revision_colors(content):
+    """Convert [REVISED] tags to HTML color spans for Streamlit markdown"""
+    if not content:
+        return content
+    
+    # Replace [REVISED] tags with blue color HTML
+    content = content.replace('[REVISED]', '<span style="color: #0066CC;">')
+    content = content.replace('[/REVISED]', '</span>')
+    
+    return content
+
+def strip_html_tags(text):
+    """Remove HTML tags from text for clean export"""
+    if not text:
+        return text
+    
+    # Remove all HTML tags
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    return clean_text
+
+# -------------- CLEAN ARTICLE FOR EXPORT ----------------
+def clean_article_for_export(article):
+    """Remove HTML color tags and other formatting for DOCX export"""
+    if not article:
+        return article
+    
+    # First strip HTML tags
+    clean_article = strip_html_tags(article)
+    
+    # Then apply the existing cleaning
+    clean_lines = []
+    for line in clean_article.split('\n'):
+        # Skip meta-commentary lines
+        if any(x in line.lower() for x in [
+            'word count:', 'total words:', '[total word', 
+            'additional words', '---expanded', 'here\'s an additional',
+            'to expand the article', 'words to expand'
+        ]):
+            continue
+        
+        # Skip separator lines
+        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
+            continue
+            
+        clean_lines.append(line)
+    
+    return '\n'.join(clean_lines).strip()
+
+# -------------- WORD COUNT ENFORCER ----------------
+def ensure_word_count(article, min_words, max_words, language="UK", title="", facts="", quotes="", keywords=[], ai_friendly=False, include_hiring_impact=False):
+    """Completely new approach - never shrink, only expand"""
+    if not article:
+        return article
+    
+    # Clean first
+    clean_lines = []
+    for line in article.split('\n'):
+        if any(x in line.lower() for x in ['word count:', 'total words:', '[total word', 'additional words', '---expanded']):
+            continue
+        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
+            continue
+        clean_lines.append(line)
+    
+    article = '\n'.join(clean_lines).strip()
+    original_word_count = len(article.split())
+    
+    if original_word_count >= min_words:
+        return article  # Already good!
+    
+    # Calculate exactly how many words we need
+    words_needed = min_words - original_word_count + 50  # Small buffer
+    
+    st.warning(f"Article has {original_word_count} words. Need to add {words_needed} more words to reach {min_words} minimum...")
+    
+    # DIFFERENT APPROACH: Ask for expansion without meta-text
+    expansion_prompt = f'''
+I need you to write {words_needed} words of additional content that naturally expands on this article about "{title}".
+
+Current article structure:
+{article}
+
+---
+
+Write {words_needed} words of additional paragraphs that expand the existing topics.
+
+CRITICAL RULES:
+1. DO NOT include any labels like "Additional paragraph for..." or "Here's more content..."
+2. DO NOT describe where content should go or what section it's for
+3. DO NOT use phrases like "To expand on...", "Building on...", "Furthermore to the section on..."
+4. Just write natural, flowing paragraphs as if they were always part of the article
+5. Each paragraph should be 100-150 words of substantive content
+6. Focus on concrete examples, data, analysis, and insights
+7. Write in {language} English
+
+Output ONLY the new paragraphs with no meta-commentary. Write {words_needed} words now:'''
+    
+    try:
+        additional_content = call_claude(expansion_prompt, max_tokens=4000, retry_count=3)
+        
+        if additional_content:
+            # Aggressive cleaning of any meta-text that slipped through
+            clean_additions = []
+            for line in additional_content.split('\n'):
+                # Skip lines that are clearly meta-text
+                line_lower = line.lower()
+                if any(phrase in line_lower for phrase in [
+                    'additional paragraph', 'additional content', 'here\'s', 'here is',
+                    'to expand', 'this adds', 'adding to', 'for the', 'section:',
+                    'i\'ll add', 'let me add', 'here are', 'to the section',
+                    'building on', 'furthermore to', 'expanding on the'
+                ]):
+                    continue
+                # Also skip if line starts with common meta-text patterns
+                if line.strip().endswith(':') and len(line.strip()) < 50:
+                    continue
+                clean_additions.append(line)
+            
+            additional_content = '\n'.join(clean_additions).strip()
+            
+            # Combine original + additions
+            expanded_article = article + "\n\n" + additional_content
+            new_word_count = len(expanded_article.split())
+            
+            if new_word_count >= min_words:
+                st.success(f"Successfully expanded article from {original_word_count} to {new_word_count} words!")
+                return expanded_article
+            else:
+                # Still short? Add more with even stricter instructions
+                still_needed = min_words - new_word_count + 50
+                st.info(f"Still need {still_needed} more words. Adding more content...")
+                
+                more_content_prompt = f'''
+Write exactly {still_needed} words about: "{title}"
+
+Create natural paragraphs with concrete examples and analysis.
+
+DO NOT write any introductory text, labels, or descriptions.
+DO NOT say what section this is for.
+Just write {still_needed} words of content:'''
+                
+                more_content = call_claude(more_content_prompt, max_tokens=2000, retry_count=3)
+                
+                if more_content:
+                    # Clean again
+                    clean_more = []
+                    for line in more_content.split('\n'):
+                        if not any(phrase in line.lower() for phrase in [
+                            'additional', 'here', 'paragraph', 'section', 'adding',
+                            'to expand', 'furthermore to', 'building on'
+                        ]):
+                            clean_more.append(line)
+                    
+                    more_content = '\n'.join(clean_more).strip()
+                    
+                    final_article = expanded_article + "\n\n" + more_content
+                    final_count = len(final_article.split())
+                    
+                    if final_count >= min_words:
+                        st.success(f"Final expansion successful: {final_count} words!")
+                        return final_article
+                    else:
+                        st.error(f"Could not reach minimum. Final: {final_count} words (need {min_words})")
+                        st.info("Use revision feature to request: 'Add 200-300 more words with additional examples and analysis'")
+                        return final_article
+                        
+    except Exception as e:
+        st.error(f"Expansion error: {str(e)}")
+    
+    return article
+
+# -------------- CLEAN ARTICLE DISPLAY ----------------
+def clean_article_for_display(article):
+    """Remove any meta-text from article before displaying"""
+    clean_lines = []
+    skip_next = False
+    
+    for line in article.split('\n'):
+        # Skip meta-commentary lines
+        if any(x in line.lower() for x in [
+            'word count:', 'total words:', '[total word', 
+            'additional words', '---expanded', 'here\'s an additional',
+            'to expand the article', 'words to expand'
+        ]):
+            skip_next = True
+            continue
+        
+        # Skip separator lines
+        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
+            continue
+            
+        # Skip line after meta-commentary
+        if skip_next and line.strip() == '':
+            skip_next = False
+            continue
+            
+        skip_next = False
+        clean_lines.append(line)
+    
+    return '\n'.join(clean_lines).strip()
+
+# -------------- PROCESS BOLD TEXT ----------------
+def process_bold_text(paragraph, p):
+    """Process markdown bold text (**text**) in a paragraph for DOCX"""
+    import re
+    
+    # Find all bold sections
+    bold_pattern = r'\*\*([^*]+)\*\*'
+    
+    # Split the text by bold markers
+    parts = re.split(bold_pattern, paragraph)
+    
+    # Clear the paragraph first
+    p.clear()
+    
+    # Add parts with proper formatting
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Regular text
+            if part:
+                p.add_run(part)
+        else:
+            # Bold text
+            run = p.add_run(part)
+            run.bold = True
+    
+    return p
+
+# -------------- CONVERT MARKDOWN TO DOCX ----------------
+def markdown_to_docx(content, title):
+    """Convert markdown content to DOCX format with proper bold text processing"""
+    doc = Document()
+    
+    # Add title (without language marker)
+    doc.add_heading(title, 0)
+    
+    # Process the content line by line
+    lines = content.split('\n')
+    current_paragraph = []
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Skip lines that are just "TITLE:" markers if present
+        if line.startswith("TITLE:"):
+            continue
+            
+        if not line:
+            # Empty line - add accumulated paragraph if any
+            if current_paragraph:
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
+                current_paragraph = []
+            continue
+        
+        # Check for headings with bold markers
+        if line.startswith('**') and line.endswith('**') and not line[2:-2].strip().startswith('*'):
+            if current_paragraph:
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
+                current_paragraph = []
+            
+            # Extract heading text and level
+            heading_text = line.strip('*').strip()
+            
+            # Determine heading level based on markers
+            if heading_text.startswith('### '):
+                heading_text = heading_text[4:]
+                h = doc.add_heading(heading_text, level=3)
+            elif heading_text.startswith('## '):
+                heading_text = heading_text[3:]
+                h = doc.add_heading(heading_text, level=2)
+            elif heading_text.startswith('# '):
+                heading_text = heading_text[2:]
+                h = doc.add_heading(heading_text, level=1)
+            else:
+                # Default to level 2 for bold lines that look like headings
+                h = doc.add_heading(heading_text, level=2)
+            
+            h.runs[0].bold = True
+        # Also check for headings without bold markers (fallback)
+        elif line.startswith('### '):
+            if current_paragraph:
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
+                current_paragraph = []
+            h = doc.add_heading(line[4:], level=3)
+            h.runs[0].bold = True
+        elif line.startswith('## '):
+            if current_paragraph:
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
+                current_paragraph = []
+            h = doc.add_heading(line[3:], level=2)
+            h.runs[0].bold = True
+        elif line.startswith('# '):
+            if current_paragraph:
+                p = doc.add_paragraph()
+                paragraph_text = ' '.join(current_paragraph)
+                process_bold_text(paragraph_text, p)
+                current_paragraph = []
+            h = doc.add_heading(line[2:], level=1)
+            h.runs[0].bold = True
+        else:
+            # Regular text - accumulate
+            current_paragraph.append(line)
+    
+    # Add any remaining paragraph
+    if current_paragraph:
+        p = doc.add_paragraph()
+        paragraph_text = ' '.join(current_paragraph)
+        process_bold_text(paragraph_text, p)
+    
+    return doc
+
+# -------------- EXPORT TO DOCX ----------------
+def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    safe_title = safe_title.replace(' ', '_')
+    
+    os.makedirs("exports", exist_ok=True)
+    filenames = {}
+    
+    # Extract actual title if it was generated
+    actual_title = title
+    
+    # Create UK version
+    if article_uk:
+        # Clean article for export (removes HTML tags)
+        article_uk = clean_article_for_export(article_uk)
+        
+        # Extract generated title if present
+        if "TITLE:" in article_uk:
+            title_line = article_uk.split('\n')[0]
+            if title_line.startswith("TITLE:"):
+                actual_title = title_line.replace("TITLE:", "").strip()
+                article_uk = '\n'.join(article_uk.split('\n')[1:])  # Remove title line from content
+        
+        doc_uk = markdown_to_docx(article_uk, actual_title)
+        
+        # Add logo if available
+        if 'logo_bytes' in st.session_state:
+            # Add a paragraph for the logo at the beginning
+            first_paragraph = doc_uk.paragraphs[0]
+            logo_paragraph = first_paragraph.insert_paragraph_before()
+            logo_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+            
+            # Save logo temporarily and add to document
+            temp_logo_path = "temp_logo.png"
+            with open(temp_logo_path, 'wb') as f:
+                st.session_state.logo_bytes.seek(0)
+                f.write(st.session_state.logo_bytes.read())
+            
+            logo_run = logo_paragraph.add_run()
+            logo_run.add_picture(temp_logo_path, width=Pt(150))
+            
+            # Clean up temp file
+            os.remove(temp_logo_path)
+            
+            # Add some spacing after logo
+            doc_uk.add_paragraph("")
+        
+        # Add minimal metadata at the end
+        doc_uk.add_paragraph("")
+        doc_uk.add_paragraph("---")
+        doc_uk.add_paragraph(f"Word Count: {len(article_uk.split())}")
+        doc_uk.add_paragraph(f"Keywords: {', '.join(keywords)}")
+        
+        filename_uk = f"exports/{safe_title}_UK_{timestamp}.docx"
+        doc_uk.save(filename_uk)
+        filenames['UK'] = filename_uk
+    
+    # Create US version
+    if article_us:
+        # Clean article for export (removes HTML tags)
+        article_us = clean_article_for_export(article_us)
+        
+        # Extract generated title if present
+        if "TITLE:" in article_us:
+            title_line = article_us.split('\n')[0]
+            if title_line.startswith("TITLE:"):
+                actual_title = title_line.replace("TITLE:", "").strip()
+                article_us = '\n'.join(article_us.split('\n')[1:])  # Remove title line from content
+        
+        doc_us = markdown_to_docx(article_us, actual_title)
+        
+        # Add logo if available
+        if 'logo_bytes' in st.session_state:
+            # Add a paragraph for the logo at the beginning
+            first_paragraph = doc_us.paragraphs[0]
+            logo_paragraph = first_paragraph.insert_paragraph_before()
+            logo_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+            
+            # Save logo temporarily and add to document
+            temp_logo_path = "temp_logo.png"
+            with open(temp_logo_path, 'wb') as f:
+                st.session_state.logo_bytes.seek(0)
+                f.write(st.session_state.logo_bytes.read())
+            
+            logo_run = logo_paragraph.add_run()
+            logo_run.add_picture(temp_logo_path, width=Pt(150))
+            
+            # Clean up temp file
+            os.remove(temp_logo_path)
+            
+            # Add some spacing after logo
+            doc_us.add_paragraph("")
+        
+        # Add minimal metadata at the end
+        doc_us.add_paragraph("")
+        doc_us.add_paragraph("---")
+        doc_us.add_paragraph(f"Word Count: {len(article_us.split())}")
+        doc_us.add_paragraph(f"Keywords: {', '.join(keywords)}")
+        
+        filename_us = f"exports/{safe_title}_US_{timestamp}.docx"
+        doc_us.save(filename_us)
+        filenames['US'] = filename_us
+    
+    return filenames, actual_title
 
 # Initialize session state
 if 'blog_history' not in st.session_state:
@@ -498,6 +1105,14 @@ st.markdown("""
 
 # Sidebar for configuration
 with st.sidebar:
+    # Logout button
+    if st.button("🚪 Logout"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+    
+    st.markdown("---")
+    
     st.markdown("### Configuration")
     
     # Client selection
@@ -717,488 +1332,6 @@ with col2:
         st.metric("Avg Words/Blog", 
                  st.session_state.generation_stats['total_words'] // max(1, st.session_state.generation_stats['total_blogs']))
 
-# -------------- WORD COUNT ENFORCER ----------------
-def ensure_word_count(article, min_words, max_words, language="UK", title="", facts="", quotes="", keywords=[], ai_friendly=False, include_hiring_impact=False):
-    """Completely new approach - never shrink, only expand"""
-    if not article:
-        return article
-    
-    # Clean first
-    clean_lines = []
-    for line in article.split('\n'):
-        if any(x in line.lower() for x in ['word count:', 'total words:', '[total word', 'additional words', '---expanded']):
-            continue
-        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
-            continue
-        clean_lines.append(line)
-    
-    article = '\n'.join(clean_lines).strip()
-    original_word_count = len(article.split())
-    
-    if original_word_count >= min_words:
-        return article  # Already good!
-    
-    # Calculate exactly how many words we need
-    words_needed = min_words - original_word_count + 50  # Small buffer
-    
-    st.warning(f"Article has {original_word_count} words. Need to add {words_needed} more words to reach {min_words} minimum...")
-    
-    # DIFFERENT APPROACH: Ask for expansion without meta-text
-    expansion_prompt = f'''
-I need you to write {words_needed} words of additional content that naturally expands on this article about "{title}".
-
-Current article structure:
-{article}
-
----
-
-Write {words_needed} words of additional paragraphs that expand the existing topics.
-
-CRITICAL RULES:
-1. DO NOT include any labels like "Additional paragraph for..." or "Here's more content..."
-2. DO NOT describe where content should go or what section it's for
-3. DO NOT use phrases like "To expand on...", "Building on...", "Furthermore to the section on..."
-4. Just write natural, flowing paragraphs as if they were always part of the article
-5. Each paragraph should be 100-150 words of substantive content
-6. Focus on concrete examples, data, analysis, and insights
-7. Write in {language} English
-
-Output ONLY the new paragraphs with no meta-commentary. Write {words_needed} words now:'''
-    
-    try:
-        additional_content = call_claude(expansion_prompt, max_tokens=4000, retry_count=3)
-        
-        if additional_content:
-            # Aggressive cleaning of any meta-text that slipped through
-            clean_additions = []
-            for line in additional_content.split('\n'):
-                # Skip lines that are clearly meta-text
-                line_lower = line.lower()
-                if any(phrase in line_lower for phrase in [
-                    'additional paragraph', 'additional content', 'here\'s', 'here is',
-                    'to expand', 'this adds', 'adding to', 'for the', 'section:',
-                    'i\'ll add', 'let me add', 'here are', 'to the section',
-                    'building on', 'furthermore to', 'expanding on the'
-                ]):
-                    continue
-                # Also skip if line starts with common meta-text patterns
-                if line.strip().endswith(':') and len(line.strip()) < 50:
-                    continue
-                clean_additions.append(line)
-            
-            additional_content = '\n'.join(clean_additions).strip()
-            
-            # Combine original + additions
-            expanded_article = article + "\n\n" + additional_content
-            new_word_count = len(expanded_article.split())
-            
-            if new_word_count >= min_words:
-                st.success(f"Successfully expanded article from {original_word_count} to {new_word_count} words!")
-                return expanded_article
-            else:
-                # Still short? Add more with even stricter instructions
-                still_needed = min_words - new_word_count + 50
-                st.info(f"Still need {still_needed} more words. Adding more content...")
-                
-                more_content_prompt = f'''
-Write exactly {still_needed} words about: "{title}"
-
-Create natural paragraphs with concrete examples and analysis.
-
-DO NOT write any introductory text, labels, or descriptions.
-DO NOT say what section this is for.
-Just write {still_needed} words of content:'''
-                
-                more_content = call_claude(more_content_prompt, max_tokens=2000, retry_count=3)
-                
-                if more_content:
-                    # Clean again
-                    clean_more = []
-                    for line in more_content.split('\n'):
-                        if not any(phrase in line.lower() for phrase in [
-                            'additional', 'here', 'paragraph', 'section', 'adding',
-                            'to expand', 'furthermore to', 'building on'
-                        ]):
-                            clean_more.append(line)
-                    
-                    more_content = '\n'.join(clean_more).strip()
-                    
-                    final_article = expanded_article + "\n\n" + more_content
-                    final_count = len(final_article.split())
-                    
-                    if final_count >= min_words:
-                        st.success(f"Final expansion successful: {final_count} words!")
-                        return final_article
-                    else:
-                        st.error(f"Could not reach minimum. Final: {final_count} words (need {min_words})")
-                        st.info("Use revision feature to request: 'Add 200-300 more words with additional examples and analysis'")
-                        return final_article
-                        
-    except Exception as e:
-        st.error(f"Expansion error: {str(e)}")
-    
-    return article
-
-# -------------- CLEAN ARTICLE DISPLAY ----------------
-def clean_article_for_display(article):
-    """Remove any meta-text from article before displaying"""
-    clean_lines = []
-    skip_next = False
-    
-    for line in article.split('\n'):
-        # Skip meta-commentary lines
-        if any(x in line.lower() for x in [
-            'word count:', 'total words:', '[total word', 
-            'additional words', '---expanded', 'here\'s an additional',
-            'to expand the article', 'words to expand'
-        ]):
-            skip_next = True
-            continue
-        
-        # Skip separator lines
-        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
-            continue
-            
-        # Skip line after meta-commentary
-        if skip_next and line.strip() == '':
-            skip_next = False
-            continue
-            
-        skip_next = False
-        clean_lines.append(line)
-    
-    return '\n'.join(clean_lines).strip()
-
-# -------------- PROCESS BOLD TEXT ----------------
-def process_bold_text(paragraph, p):
-    """Process markdown bold text (**text**) in a paragraph for DOCX"""
-    import re
-    
-    # Find all bold sections
-    bold_pattern = r'\*\*([^*]+)\*\*'
-    
-    # Split the text by bold markers
-    parts = re.split(bold_pattern, paragraph)
-    
-    # Clear the paragraph first
-    p.clear()
-    
-    # Add parts with proper formatting
-    for i, part in enumerate(parts):
-        if i % 2 == 0:
-            # Regular text
-            if part:
-                p.add_run(part)
-        else:
-            # Bold text
-            run = p.add_run(part)
-            run.bold = True
-    
-    return p
-
-# -------------- ARTICLE REVISION ----------------
-def revise_article(original_article, revision_request, language="UK", ai_friendly=False):
-    """Revise article with color-coded output - blue for revised, black for retained"""
-    language_instruction = "UK English" if language == "UK" else "US English"
-    
-    clean_article = clean_article_for_display(original_article)
-    current_words = len(clean_article.split())
-    
-    ai_format_note = ""
-    if ai_friendly:
-        ai_format_note = """
-- Maintain AI-friendly format with question-based headings
-- Keep paragraphs short (2-3 sentences max)
-- Preserve the FAQ section and TL;DR summary
-- Maintain conversational, scannable style
-"""
-    
-    prompt = f'''
-Revise this {current_words}-word blog article based on the request below.
-
-ARTICLE:
-{clean_article}
-
-REVISION REQUEST:
-{revision_request}
-
-CRITICAL INSTRUCTIONS:
-1. Provide the COMPLETE revised article, not just changed sections
-2. Mark ALL revised/changed content by wrapping it with [REVISED] and [/REVISED] tags
-3. Leave unchanged content without any tags
-4. MAINTAIN EXACTLY {current_words} words (you can go up to {current_words + 100} words but NEVER reduce)
-5. If the revision makes the article shorter, ADD more relevant content to maintain word count
-6. Maintain {language_instruction}
-7. Format headings with ** for bold (e.g., **Understanding the Digital Transformation**)
-{ai_format_note}
-
-Example of output format:
-**Unchanged Heading**
-This paragraph remains the same from the original.
-[REVISED]This paragraph has been revised based on the request and will appear in blue.[/REVISED]
-Another unchanged paragraph here.
-
-WORD COUNT REQUIREMENT: The final article MUST be at least {current_words} words. If your revisions make it shorter, expand other sections with relevant content.
-
-Provide the complete revised article with [REVISED] tags around changed content:'''
-    
-    revised_content = call_claude(prompt, retry_count=3)
-    
-    if revised_content:
-        # Process the content to add HTML color tags
-        processed_content = process_revision_colors(revised_content)
-        return processed_content
-    
-    return None
-
-def process_revision_colors(content):
-    """Convert [REVISED] tags to HTML color spans for Streamlit markdown"""
-    if not content:
-        return content
-    
-    # Replace [REVISED] tags with blue color HTML
-    content = content.replace('[REVISED]', '<span style="color: #0066CC;">')
-    content = content.replace('[/REVISED]', '</span>')
-    
-    return content
-
-def strip_html_tags(text):
-    """Remove HTML tags from text for clean export"""
-    if not text:
-        return text
-    
-    # Remove all HTML tags
-    clean_text = re.sub(r'<[^>]+>', '', text)
-    return clean_text
-
-# -------------- CLEAN ARTICLE FOR EXPORT (NEW FUNCTION) ----------------
-def clean_article_for_export(article):
-    """Remove HTML color tags and other formatting for DOCX export"""
-    if not article:
-        return article
-    
-    # First strip HTML tags
-    clean_article = strip_html_tags(article)
-    
-    # Then apply the existing cleaning
-    clean_lines = []
-    for line in clean_article.split('\n'):
-        # Skip meta-commentary lines
-        if any(x in line.lower() for x in [
-            'word count:', 'total words:', '[total word', 
-            'additional words', '---expanded', 'here\'s an additional',
-            'to expand the article', 'words to expand'
-        ]):
-            continue
-        
-        # Skip separator lines
-        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
-            continue
-            
-        clean_lines.append(line)
-    
-    return '\n'.join(clean_lines).strip()
-
-def display_colored_article(article_content, container):
-    """Display article with HTML color formatting in Streamlit"""
-    # Enable HTML in markdown for color display
-    container.markdown(article_content, unsafe_allow_html=True)
-# -------------- CONVERT MARKDOWN TO DOCX - IMPROVED WITH BOLD PROCESSING ----------------
-def markdown_to_docx(content, title):
-    """Convert markdown content to DOCX format with proper bold text processing"""
-    doc = Document()
-    
-    # Add title (without language marker)
-    doc.add_heading(title, 0)
-    
-    # Process the content line by line
-    lines = content.split('\n')
-    current_paragraph = []
-    
-    for line in lines:
-        line = line.strip()
-        
-        # Skip lines that are just "TITLE:" markers if present
-        if line.startswith("TITLE:"):
-            continue
-            
-        if not line:
-            # Empty line - add accumulated paragraph if any
-            if current_paragraph:
-                p = doc.add_paragraph()
-                paragraph_text = ' '.join(current_paragraph)
-                process_bold_text(paragraph_text, p)
-                current_paragraph = []
-            continue
-        
-        # Check for headings with bold markers
-        if line.startswith('**') and line.endswith('**') and not line[2:-2].strip().startswith('*'):
-            if current_paragraph:
-                p = doc.add_paragraph()
-                paragraph_text = ' '.join(current_paragraph)
-                process_bold_text(paragraph_text, p)
-                current_paragraph = []
-            
-            # Extract heading text and level
-            heading_text = line.strip('*').strip()
-            
-            # Determine heading level based on markers
-            if heading_text.startswith('### '):
-                heading_text = heading_text[4:]
-                h = doc.add_heading(heading_text, level=3)
-            elif heading_text.startswith('## '):
-                heading_text = heading_text[3:]
-                h = doc.add_heading(heading_text, level=2)
-            elif heading_text.startswith('# '):
-                heading_text = heading_text[2:]
-                h = doc.add_heading(heading_text, level=1)
-            else:
-                # Default to level 2 for bold lines that look like headings
-                h = doc.add_heading(heading_text, level=2)
-            
-            h.runs[0].bold = True
-        # Also check for headings without bold markers (fallback)
-        elif line.startswith('### '):
-            if current_paragraph:
-                p = doc.add_paragraph()
-                paragraph_text = ' '.join(current_paragraph)
-                process_bold_text(paragraph_text, p)
-                current_paragraph = []
-            h = doc.add_heading(line[4:], level=3)
-            h.runs[0].bold = True
-        elif line.startswith('## '):
-            if current_paragraph:
-                p = doc.add_paragraph()
-                paragraph_text = ' '.join(current_paragraph)
-                process_bold_text(paragraph_text, p)
-                current_paragraph = []
-            h = doc.add_heading(line[3:], level=2)
-            h.runs[0].bold = True
-        elif line.startswith('# '):
-            if current_paragraph:
-                p = doc.add_paragraph()
-                paragraph_text = ' '.join(current_paragraph)
-                process_bold_text(paragraph_text, p)
-                current_paragraph = []
-            h = doc.add_heading(line[2:], level=1)
-            h.runs[0].bold = True
-        else:
-            # Regular text - accumulate
-            current_paragraph.append(line)
-    
-    # Add any remaining paragraph
-    if current_paragraph:
-        p = doc.add_paragraph()
-        paragraph_text = ' '.join(current_paragraph)
-        process_bold_text(paragraph_text, p)
-    
-    return doc
-
-# -------------- EXPORT TO DOCX WITH LOGO ----------------
-def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
-    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-    safe_title = safe_title.replace(' ', '_')
-    
-    os.makedirs("exports", exist_ok=True)
-    filenames = {}
-    
-    # Extract actual title if it was generated
-    actual_title = title
-    
-    # Create UK version
-    if article_uk:
-        # Clean article for export (removes HTML tags)
-        article_uk = clean_article_for_export(article_uk)
-        
-        # Extract generated title if present
-        if "TITLE:" in article_uk:
-            title_line = article_uk.split('\n')[0]
-            if title_line.startswith("TITLE:"):
-                actual_title = title_line.replace("TITLE:", "").strip()
-                article_uk = '\n'.join(article_uk.split('\n')[1:])  # Remove title line from content
-        
-        doc_uk = markdown_to_docx(article_uk, actual_title)
-        
-        # Add logo if available
-        if 'logo_bytes' in st.session_state:
-            # Add a paragraph for the logo at the beginning
-            first_paragraph = doc_uk.paragraphs[0]
-            logo_paragraph = first_paragraph.insert_paragraph_before()
-            logo_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-            
-            # Save logo temporarily and add to document
-            temp_logo_path = "temp_logo.png"
-            with open(temp_logo_path, 'wb') as f:
-                st.session_state.logo_bytes.seek(0)
-                f.write(st.session_state.logo_bytes.read())
-            
-            logo_run = logo_paragraph.add_run()
-            logo_run.add_picture(temp_logo_path, width=Pt(150))
-            
-            # Clean up temp file
-            os.remove(temp_logo_path)
-            
-            # Add some spacing after logo
-            doc_uk.add_paragraph("")
-        
-        # Add minimal metadata at the end
-        doc_uk.add_paragraph("")
-        doc_uk.add_paragraph("---")
-        doc_uk.add_paragraph(f"Word Count: {len(article_uk.split())}")
-        doc_uk.add_paragraph(f"Keywords: {', '.join(keywords)}")
-        
-        filename_uk = f"exports/{safe_title}_UK_{timestamp}.docx"
-        doc_uk.save(filename_uk)
-        filenames['UK'] = filename_uk
-    
-    # Create US version
-    if article_us:
-        # Clean article for export (removes HTML tags)
-        article_us = clean_article_for_export(article_us)
-        
-        # Extract generated title if present
-        if "TITLE:" in article_us:
-            title_line = article_us.split('\n')[0]
-            if title_line.startswith("TITLE:"):
-                actual_title = title_line.replace("TITLE:", "").strip()
-                article_us = '\n'.join(article_us.split('\n')[1:])  # Remove title line from content
-        
-        doc_us = markdown_to_docx(article_us, actual_title)
-        
-        # Add logo if available
-        if 'logo_bytes' in st.session_state:
-            # Add a paragraph for the logo at the beginning
-            first_paragraph = doc_us.paragraphs[0]
-            logo_paragraph = first_paragraph.insert_paragraph_before()
-            logo_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-            
-            # Save logo temporarily and add to document
-            temp_logo_path = "temp_logo.png"
-            with open(temp_logo_path, 'wb') as f:
-                st.session_state.logo_bytes.seek(0)
-                f.write(st.session_state.logo_bytes.read())
-            
-            logo_run = logo_paragraph.add_run()
-            logo_run.add_picture(temp_logo_path, width=Pt(150))
-            
-            # Clean up temp file
-            os.remove(temp_logo_path)
-            
-            # Add some spacing after logo
-            doc_us.add_paragraph("")
-        
-        # Add minimal metadata at the end
-        doc_us.add_paragraph("")
-        doc_us.add_paragraph("---")
-        doc_us.add_paragraph(f"Word Count: {len(article_us.split())}")
-        doc_us.add_paragraph(f"Keywords: {', '.join(keywords)}")
-        
-        filename_us = f"exports/{safe_title}_US_{timestamp}.docx"
-        doc_us.save(filename_us)
-        filenames['US'] = filename_us
-    
-    return filenames, actual_title
 # -------------- MAIN EXECUTION ----------------
 # Handle title generation and blog generation
 if submitted and (blog_title or (st.session_state.use_generated_title and st.session_state.generated_title)):
@@ -1328,7 +1461,7 @@ if st.session_state.current_articles:
             with col1:
                 if 'UK' in articles and st.button("Revise UK Version", type="secondary"):
                     with st.spinner("Revising UK version..."):
-                        revised_uk = revise_article(articles['UK'], revision_request, "UK", ai_friendly)  # Pass ai_friendly
+                        revised_uk = revise_article(articles['UK'], revision_request, "UK", ai_friendly)
                         if revised_uk:
                             st.session_state.current_articles['UK'] = revised_uk
                             st.success("UK version revised!")
@@ -1337,7 +1470,7 @@ if st.session_state.current_articles:
             with col2:
                 if 'US' in articles and st.button("Revise US Version", type="secondary"):
                     with st.spinner("Revising US version..."):
-                        revised_us = revise_article(articles['US'], revision_request, "US", ai_friendly)  # Pass ai_friendly
+                        revised_us = revise_article(articles['US'], revision_request, "US", ai_friendly)
                         if revised_us:
                             st.session_state.current_articles['US'] = revised_us
                             st.success("US version revised!")
@@ -1392,10 +1525,6 @@ if st.session_state.current_articles:
                 display_title = title_line.replace("TITLE:", "").strip()
                 st.info(f"Generated Title: **{display_title}**")
     
-    # Create tabs for different versions
-    # In the main display section, update the article preview tabs:
-# (This replaces the existing tab display code around line 1400-1450)
-
     # Create tabs for different versions
     if len(articles) == 2:
         tab1, tab2 = st.tabs(["UK English", "US English"])
