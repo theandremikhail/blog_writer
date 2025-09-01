@@ -18,16 +18,24 @@ import base64
 import hashlib
 
 # -------------- PASSWORD PROTECTION ----------------
+# -------------- PASSWORD PROTECTION (FIXED FOR STREAMLIT CLOUD) ----------------
 def check_password():
     """Returns `True` if the user had the correct password."""
     
     def password_entered():
         """Checks whether a password entered by the user is correct."""
-        if 'password' in st.secrets and st.session_state["password"] == st.secrets["password"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
-        else:
-            st.session_state["password_correct"] = False
+        # Check if password field exists in session state first
+        if "password_input" in st.session_state:
+            # Check password against secrets
+            if 'password' in st.secrets:
+                if st.session_state["password_input"] == st.secrets["password"]:
+                    st.session_state["password_correct"] = True
+                    del st.session_state["password_input"]  # Don't store password
+                else:
+                    st.session_state["password_correct"] = False
+            else:
+                st.error("Password not configured in secrets. Please add it to Streamlit Cloud settings.")
+                st.session_state["password_correct"] = False
 
     # First run or password not correct
     if "password_correct" not in st.session_state:
@@ -45,11 +53,10 @@ def check_password():
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            st.text_input(
+            password = st.text_input(
                 "Password", 
                 type="password", 
-                on_change=password_entered, 
-                key="password",
+                key="password_input",
                 placeholder="Enter your password"
             )
             st.markdown("""
@@ -62,6 +69,8 @@ def check_password():
             
             if st.button("Login", use_container_width=True):
                 password_entered()
+                if "password_correct" in st.session_state:
+                    st.rerun()
         
         if "password_correct" in st.session_state and not st.session_state["password_correct"]:
             st.error("😕 Password incorrect. Please try again.")
@@ -84,15 +93,16 @@ def check_password():
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            st.text_input(
+            password = st.text_input(
                 "Password", 
                 type="password", 
-                on_change=password_entered, 
-                key="password",
+                key="password_input",
                 placeholder="Enter your password"
             )
             if st.button("Login", use_container_width=True):
                 password_entered()
+                if "password_correct" in st.session_state:
+                    st.rerun()
         
         st.error("😕 Password incorrect. Please try again.")
         return False
