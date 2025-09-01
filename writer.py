@@ -897,9 +897,8 @@ def process_bold_text(paragraph, p):
     return p
 
 # -------------- ARTICLE REVISION ----------------
-# -------------- ARTICLE REVISION ----------------
 def revise_article(original_article, revision_request, language="UK", ai_friendly=False):
-    """Revise article with word count preservation"""
+    """Revise article with color-coded output - blue for revised, black for retained"""
     language_instruction = "UK English" if language == "UK" else "US English"
     
     clean_article = clean_article_for_display(original_article)
@@ -923,17 +922,87 @@ ARTICLE:
 REVISION REQUEST:
 {revision_request}
 
-IMPORTANT:
-- Maintain {language_instruction}
-- Keep approximately {current_words} words (don't reduce word count)
-- Make only the requested changes
-- If the request asks for expansion, add the requested content
-- Format headings with ** for bold (e.g., **Understanding the Digital Transformation**)
+CRITICAL INSTRUCTIONS:
+1. Provide the COMPLETE revised article, not just changed sections
+2. Mark ALL revised/changed content by wrapping it with [REVISED] and [/REVISED] tags
+3. Leave unchanged content without any tags
+4. MAINTAIN EXACTLY {current_words} words (you can go up to {current_words + 100} words but NEVER reduce)
+5. If the revision makes the article shorter, ADD more relevant content to maintain word count
+6. Maintain {language_instruction}
+7. Format headings with ** for bold (e.g., **Understanding the Digital Transformation**)
 {ai_format_note}
 
-Provide the complete revised article:'''
+Example of output format:
+**Unchanged Heading**
+This paragraph remains the same from the original.
+[REVISED]This paragraph has been revised based on the request and will appear in blue.[/REVISED]
+Another unchanged paragraph here.
+
+WORD COUNT REQUIREMENT: The final article MUST be at least {current_words} words. If your revisions make it shorter, expand other sections with relevant content.
+
+Provide the complete revised article with [REVISED] tags around changed content:'''
     
-    return call_claude(prompt, retry_count=3)
+    revised_content = call_claude(prompt, retry_count=3)
+    
+    if revised_content:
+        # Process the content to add HTML color tags
+        processed_content = process_revision_colors(revised_content)
+        return processed_content
+    
+    return None
+
+def process_revision_colors(content):
+    """Convert [REVISED] tags to HTML color spans for Streamlit markdown"""
+    if not content:
+        return content
+    
+    # Replace [REVISED] tags with blue color HTML
+    content = content.replace('[REVISED]', '<span style="color: #0066CC;">')
+    content = content.replace('[/REVISED]', '</span>')
+    
+    return content
+
+def strip_html_tags(text):
+    """Remove HTML tags from text for clean export"""
+    if not text:
+        return text
+    
+    # Remove all HTML tags
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    return clean_text
+
+# -------------- CLEAN ARTICLE FOR EXPORT (NEW FUNCTION) ----------------
+def clean_article_for_export(article):
+    """Remove HTML color tags and other formatting for DOCX export"""
+    if not article:
+        return article
+    
+    # First strip HTML tags
+    clean_article = strip_html_tags(article)
+    
+    # Then apply the existing cleaning
+    clean_lines = []
+    for line in clean_article.split('\n'):
+        # Skip meta-commentary lines
+        if any(x in line.lower() for x in [
+            'word count:', 'total words:', '[total word', 
+            'additional words', '---expanded', 'here\'s an additional',
+            'to expand the article', 'words to expand'
+        ]):
+            continue
+        
+        # Skip separator lines
+        if line.strip() in ['---', '___', '---EXPANDED CONTENT---']:
+            continue
+            
+        clean_lines.append(line)
+    
+    return '\n'.join(clean_lines).strip()
+
+def display_colored_article(article_content, container):
+    """Display article with HTML color formatting in Streamlit"""
+    # Enable HTML in markdown for color display
+    container.markdown(article_content, unsafe_allow_html=True)
 # -------------- CONVERT MARKDOWN TO DOCX - IMPROVED WITH BOLD PROCESSING ----------------
 def markdown_to_docx(content, title):
     """Convert markdown content to DOCX format with proper bold text processing"""
@@ -1039,8 +1108,8 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     
     # Create UK version
     if article_uk:
-        # Clean article before export
-        article_uk = clean_article_for_display(article_uk)
+        # Clean article for export (removes HTML tags)
+        article_uk = clean_article_for_export(article_uk)
         
         # Extract generated title if present
         if "TITLE:" in article_uk:
@@ -1085,8 +1154,8 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
     
     # Create US version
     if article_us:
-        # Clean article before export
-        article_us = clean_article_for_display(article_us)
+        # Clean article for export (removes HTML tags)
+        article_us = clean_article_for_export(article_us)
         
         # Extract generated title if present
         if "TITLE:" in article_us:
@@ -1130,7 +1199,6 @@ def export_docx(title, article_uk, article_us, keywords, document_analysis=""):
         filenames['US'] = filename_us
     
     return filenames, actual_title
-
 # -------------- MAIN EXECUTION ----------------
 # Handle title generation and blog generation
 if submitted and (blog_title or (st.session_state.use_generated_title and st.session_state.generated_title)):
@@ -1325,48 +1393,90 @@ if st.session_state.current_articles:
                 st.info(f"Generated Title: **{display_title}**")
     
     # Create tabs for different versions
+    # In the main display section, update the article preview tabs:
+# (This replaces the existing tab display code around line 1400-1450)
+
+    # Create tabs for different versions
     if len(articles) == 2:
         tab1, tab2 = st.tabs(["UK English", "US English"])
         
         with tab1:
-            # Clean article for display
+            # Check if article contains color spans (indicating it's been revised)
+            if '<span style="color:' in articles['UK']:
+                # Display with HTML for color coding
+                if show_word_count:
+                    # Count words without HTML tags for accurate count
+                    clean_text = re.sub(r'<[^>]+>', '', articles['UK'])
+                    st.info(f"Word Count: {len(clean_text.split())} words")
+                if show_keywords and 'current_keywords' in st.session_state:
+                    st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+                st.markdown(articles['UK'], unsafe_allow_html=True)
+            else:
+                # Clean article for display (original behavior)
+                article_uk_display = clean_article_for_display(articles['UK'])
+                if show_word_count:
+                    st.info(f"Word Count: {len(article_uk_display.split())} words")
+                if show_keywords and 'current_keywords' in st.session_state:
+                    st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+                st.markdown(article_uk_display)
+        
+        with tab2:
+            # Check if article contains color spans (indicating it's been revised)
+            if '<span style="color:' in articles['US']:
+                # Display with HTML for color coding
+                if show_word_count:
+                    # Count words without HTML tags for accurate count
+                    clean_text = re.sub(r'<[^>]+>', '', articles['US'])
+                    st.info(f"Word Count: {len(clean_text.split())} words")
+                if show_keywords and 'current_keywords' in st.session_state:
+                    st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+                st.markdown(articles['US'], unsafe_allow_html=True)
+            else:
+                # Clean article for display (original behavior)
+                article_us_display = clean_article_for_display(articles['US'])
+                if show_word_count:
+                    st.info(f"Word Count: {len(article_us_display.split())} words")
+                if show_keywords and 'current_keywords' in st.session_state:
+                    st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+                st.markdown(article_us_display)
+    
+    elif 'UK' in articles:
+        # Check if article contains color spans (indicating it's been revised)
+        if '<span style="color:' in articles['UK']:
+            # Display with HTML for color coding
+            if show_word_count:
+                clean_text = re.sub(r'<[^>]+>', '', articles['UK'])
+                st.info(f"Word Count: {len(clean_text.split())} words")
+            if show_keywords and 'current_keywords' in st.session_state:
+                st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+            st.markdown(articles['UK'], unsafe_allow_html=True)
+        else:
+            # Clean article for display (original behavior)
             article_uk_display = clean_article_for_display(articles['UK'])
-            
             if show_word_count:
                 st.info(f"Word Count: {len(article_uk_display.split())} words")
             if show_keywords and 'current_keywords' in st.session_state:
                 st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
             st.markdown(article_uk_display)
-        
-        with tab2:
-            # Clean article for display
+    
+    else:
+        # Check if article contains color spans (indicating it's been revised)
+        if '<span style="color:' in articles['US']:
+            # Display with HTML for color coding
+            if show_word_count:
+                clean_text = re.sub(r'<[^>]+>', '', articles['US'])
+                st.info(f"Word Count: {len(clean_text.split())} words")
+            if show_keywords and 'current_keywords' in st.session_state:
+                st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
+            st.markdown(articles['US'], unsafe_allow_html=True)
+        else:
+            # Clean article for display (original behavior)
             article_us_display = clean_article_for_display(articles['US'])
-            
             if show_word_count:
                 st.info(f"Word Count: {len(article_us_display.split())} words")
             if show_keywords and 'current_keywords' in st.session_state:
                 st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
             st.markdown(article_us_display)
-    
-    elif 'UK' in articles:
-        # Clean article for display
-        article_uk_display = clean_article_for_display(articles['UK'])
-        
-        if show_word_count:
-            st.info(f"Word Count: {len(article_uk_display.split())} words")
-        if show_keywords and 'current_keywords' in st.session_state:
-            st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
-        st.markdown(article_uk_display)
-    
-    else:
-        # Clean article for display
-        article_us_display = clean_article_for_display(articles['US'])
-        
-        if show_word_count:
-            st.info(f"Word Count: {len(article_us_display.split())} words")
-        if show_keywords and 'current_keywords' in st.session_state:
-            st.info(f"Keywords: {', '.join(st.session_state.current_keywords)}")
-        st.markdown(article_us_display)
 
 # Footer
 st.markdown("---")
