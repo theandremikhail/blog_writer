@@ -346,6 +346,8 @@ Content Must Include:
 
 Writing Style:
 - Conversational and easy to scan
+- Do not create quotes on your own
+- Always put line breaks after every item on a list
 - No jargon - explain complex terms simply
 - Question-based headings throughout
 - Direct answers immediately following questions
