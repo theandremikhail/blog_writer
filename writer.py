@@ -301,7 +301,7 @@ def generate_prompt(title, facts, quotes, ai_opt, client_cfg, custom_keywords=""
     keywords = ", ".join(base_keywords)
     
     language_instruction = "UK English" if language == "UK" else "US English"
-    spelling_note = "(use British spelling, 's' instead of 'z' in words like 'organisation')" if language == "UK" else "(use American spelling, 'z' instead of 's' in words like 'organization')"
+    spelling_note = "(CRITICAL: use British spelling throughout - 's' instead of 'z' in words like recognise, organisation, realise, optimise, analyse, specialise, etc.)" if language == "UK" else "(use American spelling - 'z' instead of 's' in words like recognize, organization, realize, optimize, analyze, specialize, etc.)"
     
     # Parse word range and OVERSHOOT to compensate
     try:
@@ -326,6 +326,7 @@ Detailed section on how this affects recruitment, talent acquisition, hiring man
 Write a comprehensive {target_words}-word blog article in {language_instruction} {spelling_note} about: "{title}"
 
 IMPORTANT: Write EXACTLY {target_words} words. This is a hard requirement.
+CRITICAL SPELLING REQUIREMENT: You must use {language_instruction} spelling consistently throughout the entire article.
 
 FORMAT FOR AI-FRIENDLY/AEO OPTIMIZED CONTENT:
 
@@ -376,6 +377,7 @@ Remember: Use real examples and data only. Keep paragraphs short. Make it scanna
 Write a comprehensive {target_words}-word blog article in {language_instruction} {spelling_note} about: "{title}"
 
 IMPORTANT: Write EXACTLY {target_words} words. This is a hard requirement.
+CRITICAL SPELLING REQUIREMENT: You must use {language_instruction} spelling consistently throughout the entire article.
 
 Include these sections:
 - **[Opening/Lead Section - use a descriptive title, NOT "Introduction"]**:
@@ -447,6 +449,7 @@ def call_claude(prompt, max_tokens=8000, retry_count=3):
 def revise_article(original_article, revision_request, language="UK", ai_friendly=False):
     """Revise article with color-coded output - blue for revised, black for retained"""
     language_instruction = "UK English" if language == "UK" else "US English"
+    spelling_examples = "recognise, organisation, realise, optimise, analyse, specialise" if language == "UK" else "recognize, organization, realize, optimize, analyze, specialize"
     
     # Clean the article first
     clean_article = clean_article_for_display(original_article)
@@ -484,7 +487,7 @@ CRITICAL INSTRUCTIONS - READ CAREFULLY:
 
 7. The output must be AT LEAST {current_words} words (can be up to {current_words + 100} words)
 8. If revisions make it shorter, expand other sections to maintain word count
-9. Maintain {language_instruction}
+9. Maintain {language_instruction} with correct spelling ({spelling_examples})
 10. Keep all formatting with ** for bold headings
 {ai_format_note}
 
@@ -527,6 +530,7 @@ OUTPUT RULES:
 - Use [REVISED][/REVISED] tags ONLY around changed parts
 - Include EVERYTHING - no shortcuts, no summaries, no "rest continues" phrases
 - Minimum {current_words} words
+- Must use {language_instruction} spelling ({spelling_examples})
 
 Output the FULL article now:'''
             
