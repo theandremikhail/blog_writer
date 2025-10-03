@@ -401,10 +401,11 @@ Discussion of challenges, opportunities, and solutions
 Future outlook and actionable takeaways (NOT a conclusion)
 
 Requirements:
+- DO NOT make up statistics
 - DO NOT use the word "Introduction" as a heading
 - Start with an engaging, topic-specific heading for the opening section
 - Write detailed, expansive paragraphs (100-150 words each)
-- Include specific examples, statistics, and expert insights throughout
+- Include specific examples and expert insights throughout
 - Use transitions and elaborate on every point
 - Add single line after headings
 - Format headings with ** for bold (e.g., **Understanding the Digital Transformation**)
