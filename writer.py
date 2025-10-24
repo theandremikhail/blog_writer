@@ -346,6 +346,7 @@ Content Must Include:
 - Use bullet points where helpful for scannability
 
 Writing Style:
+- Do not use em dashes
 - Conversational and easy to scan
 - Do not create quotes on your own
 - Always put line breaks after every item on a list
