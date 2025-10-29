@@ -274,6 +274,7 @@ Requirements:
 - Keywords to consider: {keywords}
 - Style: {style_hints[variation]}
 
+
 Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, just the title text.
 '''
     
