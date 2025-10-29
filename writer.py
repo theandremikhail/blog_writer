@@ -426,7 +426,7 @@ def call_claude(prompt, max_tokens=8000, retry_count=3):
     for attempt in range(retry_count):
         try:
             response = anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-5-20250929",
                 max_tokens=max_tokens,
                 temperature=0.7,
                 messages=[{"role": "user", "content": prompt}]
