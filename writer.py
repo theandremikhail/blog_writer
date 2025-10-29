@@ -279,7 +279,7 @@ Respond with ONLY the title, nothing else. No explanation, no "Title:" prefix, j
     
     try:
         response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-5-20250929",
             max_tokens=100,
             temperature=0.9,  # Higher temperature for more variation
             messages=[{"role": "user", "content": prompt}]
